@@ -1,12 +1,19 @@
 #include "df.hpp"
 
 // Constructor
-DIGITAL_FILTER::DIGITAL_FILTER(int Ny, int Nz, double d_i) : Ny(Ny), Nz(Nz), d_i(d_i) {
+DIGITAL_FILTER::DIGITAL_FILTER(int Ny, int Nz, double d_i, double d_v, int n_ranks) : Ny(Ny), Nz(Nz), d_i(d_i), d_v(d_v), n_ranks(n_ranks) {
 
 
-    d_v = 0.002 * d_i; 
+    // int size, rank;
+    // MPI_Comm_size(MPI_COMM_WORLD, &size);
+    // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // MPI_Comm df_comm;
 
     n_cells = Ny * Nz;  
+    timestep = 0;
+
+    fake_grid();
 
     Iy = Vector(n_cells);
     Iz = Vector(n_cells);
@@ -17,42 +24,56 @@ DIGITAL_FILTER::DIGITAL_FILTER(int Ny, int Nz, double d_i) : Ny(Ny), Nz(Nz), d_i
     Nw_ys = vector<int>(n_cells);
     Nw_zs = vector<int>(n_cells);
     N_holder = vector<int>(6); 
-    holder = Vector(n_cells);
     u_fluc = Vector(n_cells);
     v_fluc = Vector(n_cells);
     w_fluc = Vector(n_cells);
+    u_fluc_old = Vector(n_cells);
+    v_fluc_old = Vector(n_cells);
+    w_fluc_old = Vector(n_cells);
+
+    R11 = Vector(n_cells, 0.0);
+    R21 = Vector(n_cells, 0.0);
+    R22 = Vector(n_cells, 0.0);
+    R33 = Vector(n_cells, 0.0);
+
+
+    double u_tau = 0.05;
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;
+            double eta = yc[idx] / d_i;
+            double K = 1.5 * u_tau * u_tau * (1.0 - tanh((eta - 0.2) / 0.05));
+            double sigma = sqrt(2.0/3.0 * K);
+            
+            R11[idx] = sigma;
+            R22[idx] = sigma;
+            R33[idx] = sigma;
+        }
+    }
+
+
+    calculate_filter_properties();
 
     
 }
 
 void DIGITAL_FILTER::generate_white_noise() {
 
-    static mt19937 gen(random_device{}());
+    static pcg32 rng; 
     static normal_distribution<> dist(0.0, 1.0);
 
-    for (auto &val : ru_ys) {
-        val = dist(gen);
-    }
+    auto fill_with_normals = [&](auto &vec) {
+        for (auto &val : vec) {
+            val = dist(rng);
+        }
+    };
 
-    for (auto &val : ru_zs) {
-        val = dist(gen);
-    }
-
-    for (auto &val : rv_ys) {
-        val = dist(gen);
-    }
-
-    for (auto &val : rv_zs) {
-        val = dist(gen);
-    }
-
-    for (auto &val : rw_ys) {
-        val = dist(gen);
-    }
-
-    for (auto &val : rw_zs) {
-        val = dist(gen);
-    }
+    fill_with_normals(ru_ys);
+    fill_with_normals(ru_zs);
+    fill_with_normals(rv_ys);
+    fill_with_normals(rv_zs);
+    fill_with_normals(rw_ys);
+    fill_with_normals(rw_zs);
 }
 
 /**
@@ -63,23 +84,27 @@ void DIGITAL_FILTER::generate_white_noise() {
 void DIGITAL_FILTER::calculate_filter_properties() {
 
     /**
-    *       Find N for u' filtering in the z-direction.
+    *       Find filter half-width (N) for u' when filtering in the z-direction.
     */
 
-    Iz_out = 0.4 * d_i;
+    // Integral length scales
+    Iz_out = 0.4 * d_i; 
     Iz_inn = 150 * d_v; 
 
+    // Holders for maximum filter widths for creating ghost cells.
     Ny_max = 0; Nz_max = 0; 
 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) { 
 
-            Iz[j * Nz + k] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[j * Nz + k] / d_i - 0.2) / 0.03));       // This line computes the integral length scale dependant on y
+            int idx = j * Nz + k;
 
-            double n_int = max(1.0, Iz[j * Nz + k] / dz[j * Nz + k]);                                       // This finds the intermediate N value with double precision
-            Nu_zs[j * Nz + k] = 2 * static_cast<int>(n_int);                                                // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
+            Iz[idx] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[idx] / d_i - 0.2) / 0.03));      // This line computes the integral length scale dependant on y
+
+            double n_int = max(1.0, Iz[idx] / dz[idx]);                                                 // This finds the intermediate N value with double precision
+            Nu_zs[idx] = 2 * static_cast<int>(n_int);                                                   // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
             
-            if (n_int > Nz_max) Nz_max =  2 * static_cast<int>(n_int);                                      // This line checks if the most recently calculated N is bigger than the last one to create boundaries for r_k
+            if (n_int > Nz_max) Nz_max =  2 * static_cast<int>(n_int);                                  // This line checks if the most recently calculated N is bigger than the last one to create boundaries for r_k
         }
     }
 
@@ -92,14 +117,14 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     double sum = 0.0;
     for (int i = 0; i < 2 * Nz_max + 1; ++i) {
         int kk = i - Nz_max; 
-        double val = exp(-2 * M_PI *  abs(kk) / Nz_max);
+        double val = exp(pi_c * abs(kk) / Nz_max);
         sum += val * val; 
     }
-
     sum = sqrt(sum); 
+
     for (int i = 0; i < 2 * Nz_max + 1; ++i) {
         int kk = i - Nz_max;
-        bu_z[i] = exp(-2 * M_PI * abs(kk) / Nz_max) / sum;
+        bu_z[i] = exp(pi_c * abs(kk) / Nz_max) / sum;
     }
 
     /**
@@ -108,10 +133,13 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
-            Iy[j * Nz + k] = 0.67 * Iz[j * Nz + k];
-            double n_int = max(1.0, Iy[j * Nz + k] / dy[j * Nz + k]); 
 
-            Nu_ys[j * Nz + k] = static_cast<int>(n_int);
+            int idx = j * Nz + k;
+
+            Iy[idx] = 0.67 * Iz[idx];
+            double n_int = max(1.0, Iy[idx] / dy[idx]); 
+
+            Nu_ys[idx] = static_cast<int>(n_int);
             if (n_int > Ny_max) Ny_max = static_cast<int>(n_int);
         }
     }
@@ -124,7 +152,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     sum = 0.0;
     for (int i = 0; i < 2 * Ny_max + 1; ++i) {
         int kk = i - Ny_max; 
-        double val = exp(-2 * M_PI *  abs(kk) / Ny_max);
+        double val = exp(pi_c *  abs(kk) / Ny_max); 
         sum += val * val; 
     }
 
@@ -132,7 +160,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int i = 0; i < 2 * Ny_max + 1; ++i) {
         int kk = i - Ny_max;
-        bu_y[i] = exp(-2 * M_PI * abs(kk) / Ny_max) / sum;
+        bu_y[i] = exp(pi_c * abs(kk) / Ny_max) / sum;
     }
 
     
@@ -147,10 +175,12 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) { 
 
-            Iz[j * Nz + k] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[j * Nz + k] / d_i - 0.2) / 0.03));       // This line computes the integral length scale dependant on y
+            int idx = j * Nz + k;
 
-            double n_int = max(1.0, Iz[j * Nz + k] / dz[j * Nz + k]);                                                 // This finds the intermediate N value with double precision
-            Nv_zs[j * Nz + k] = static_cast<int>(n_int);                                                     // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
+            Iz[idx] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[idx] / d_i - 0.2) / 0.03));       // This line computes the integral length scale dependant on y
+
+            double n_int = max(1.0, Iz[idx] / dz[idx]);                                                 // This finds the intermediate N value with double precision
+            Nv_zs[idx] = static_cast<int>(n_int);                                                     // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
             
             if (n_int > Nz_max) Nz_max = static_cast<int>(n_int);                                           // This line checks if the most recently calculated N is bigger than the last one to create boundaries for r_k
         }
@@ -165,7 +195,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     sum = 0.0;
     for (int i = 0; i < 2 * Nz_max + 1; ++i) {
         int kk = i - Nz_max; 
-        double val = exp(-2 * M_PI *  abs(kk) / Nz_max);
+        double val = exp(pi_c *  abs(kk) / Nz_max);
         sum += val * val; 
     }
 
@@ -173,7 +203,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int i = 0; i < 2 * Nz_max + 1; ++i) {
         int kk = i - Nz_max;
-        bv_z[i] = exp(-2 * M_PI * abs(kk) / Nz_max) / sum;
+        bv_z[i] = exp(pi_c * abs(kk) / Nz_max) / sum;
     }
 
     /**
@@ -182,10 +212,13 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
-            Iy[j * Nz + k] = 0.67 * Iz[j * Nz + k];
 
-            double n_int = max(1.0, Iy[j * Nz + k] / dy[j * Nz + k]);  
-            Nv_ys[j * Nz + k] = static_cast<int>(n_int);
+            int idx = j * Nz + k;
+
+            Iy[idx] = 0.67 * Iz[idx];
+
+            double n_int = max(1.0, Iy[idx] / dy[idx]);  
+            Nv_ys[idx] = static_cast<int>(n_int);
 
             if (n_int > Ny_max) Ny_max = static_cast<int>(n_int);
         }
@@ -200,7 +233,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     sum = 0.0;
     for (int i = 0; i < 2 * Ny_max + 1; ++i) {
         int kk = i - Ny_max; 
-        double val = exp(-2 * M_PI *  abs(kk) / Ny_max);
+        double val = exp(pi_c *  abs(kk) / Ny_max);
         sum += val * val; 
     }
 
@@ -208,7 +241,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int i = 0; i < 2 * Ny_max + 1; ++i) {
         int kk = i - Ny_max;
-        bv_y[i] = exp(-2 * M_PI * abs(kk) / Ny_max) / sum;
+        bv_y[i] = exp(pi_c * abs(kk) / Ny_max) / sum;
     }
 
     /** /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -221,10 +254,12 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) { 
 
-            Iz[j * Nz + k] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[j * Nz + k]/ d_i - 0.2) / 0.03));       // This line computes the integral length scale dependant on y
+            int idx = j * Nz + k;
 
-            double n_int = max(1.0, Iz[j * Nz + k] / dz[j * Nz + k]);                                                 // This finds the intermediate N value with double precision
-            Nw_zs[j * Nz + k] = static_cast<int>(n_int);                                                     // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
+            Iz[idx] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[idx]/ d_i - 0.2) / 0.03));       // This line computes the integral length scale dependant on y
+
+            double n_int = max(1.0, Iz[idx] / dz[idx]);                                                 // This finds the intermediate N value with double precision
+            Nw_zs[idx] = static_cast<int>(n_int);                                                     // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
 
             if (n_int > Nz_max) Nz_max = static_cast<int>(n_int);                                           // This line checks if the most recently calculated N is bigger than the last one to create boundaries for r_k
         }
@@ -239,7 +274,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     sum = 0.0;
     for (int i = 0; i < 2 * Nz_max + 1; ++i) {
         int kk = i - Nz_max; 
-        double val = exp(-2 * M_PI *  abs(kk) / Nz_max);
+        double val = exp(pi_c *  abs(kk) / Nz_max);
         sum += val * val; 
     }
 
@@ -247,7 +282,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int i = 0; i < 2 * Nz_max + 1; ++i) {
         int kk = i - Nz_max;
-        bw_z[i] = exp(-2 * M_PI * abs(kk) / Nz_max) / sum;
+        bw_z[i] = exp(pi_c * abs(kk) / Nz_max) / sum;
     } 
 
     /**
@@ -256,10 +291,13 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
-            Iy[j * Nz + k] = 0.67 * Iz[j * Nz + k];
 
-            double n_int = max(1.0, Iy[j * Nz + k] / dy[j * Nz + k]);  
-            Nw_ys[j * Nz + k] = static_cast<int>(n_int);
+            int idx = j * Nz + k;
+
+            Iy[idx] = 0.67 * Iz[idx];
+
+            double n_int = max(1.0, Iy[idx] / dy[idx]);  
+            Nw_ys[idx] = static_cast<int>(n_int);
 
             if (n_int > Ny_max) Ny_max = static_cast<int>(n_int);
         }
@@ -274,7 +312,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     sum = 0.0;
     for (int i = 0; i < 2 * Ny_max + 1; ++i) {
         int kk = i - Ny_max; 
-        double val = exp(-2 * M_PI *  abs(kk) / Ny_max);
+        double val = exp(pi_c *  abs(kk) / Ny_max);
         sum += val * val; 
     }
 
@@ -282,23 +320,28 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     for (int i = 0; i < 2 * Ny_max + 1; ++i) {
         int kk = i - Ny_max;
-        bw_y[i] = exp(-2 * M_PI * abs(kk) / Ny_max) / sum;
+        bw_y[i] = exp(pi_c * abs(kk) / Ny_max) / sum;
     }
 
 }
-void DIGITAL_FILTER::filter() {
+void DIGITAL_FILTER::filtering_sweeps() {
+
+    int N_z = N_holder[0];
+    int N_y = N_holder[1];    
 
     // Filter u' in y-direction. 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            int r_idy = ((j + N_holder[1]) * Nz + k);
-            int r_idz = (j * (Nz + 2 * N_holder[0]) + N_holder[0] + k);
+            int r_idy = ((j + N_y) * Nz + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k); 
+            int idx = j * Nz + k;
 
             double sum = 0.0;
-            for (int i = 0; i < 2 * Nu_ys[j * Nz + k] + 1; ++i) {
-                int kk = i - Nu_ys[j * Nz + k];
-                sum += bu_y[N_holder[1] + kk] * ru_ys[r_idy + kk * Nz];
+            for (int i = 0; i < 2 * Nu_ys[idx] + 1; ++i) {
+
+                int kk = i - Nu_ys[idx];
+                sum += bu_y[N_y + kk] * ru_ys[r_idy + kk * Nz];
             }
 
             ru_zs[r_idz] = sum; 
@@ -309,29 +352,34 @@ void DIGITAL_FILTER::filter() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            int r_idz = (j * (Nz + 2 * N_holder[0]) + N_holder[0] + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
 
             double sum = 0.0;
-            for (int i = 0; i < 2 * Nu_zs[j * Nz + k] + 1; ++i) {
-                int kk = i - Nu_zs[j * Nz + k];
-                sum += bu_z[N_holder[0] + kk] * ru_zs[r_idz + kk]; 
+            for (int i = 0; i < 2 * Nu_zs[idx] + 1; ++i) {
+                int kk = i - Nu_zs[idx];
+                sum += bu_z[N_z + kk] * ru_zs[r_idz + kk]; 
             }
 
-            u_fluc[j * Nz + k] = sum;
+            u_fluc[idx] = sum;
         }
     }
+
+    N_z = N_holder[2];
+    N_y = N_holder[3];
 
     // Filter v' in y-direction.
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            int r_idy = ((j + N_holder[3]) * Nz + k);
-            int r_idz = (j * (Nz + 2 * N_holder[2]) + N_holder[2] + k);
+            int r_idy = ((j + N_y) * Nz + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
 
             double sum = 0.0;
-            for (int i = 0; i < 2 * Nv_ys[j * Nz + k] + 1; ++i) {
-                int kk = i - Nv_ys[j * Nz + k];
-                sum += bv_y[N_holder[3] + kk] * rv_ys[r_idy + kk * Nz];
+            for (int i = 0; i < 2 * Nv_ys[idx] + 1; ++i) {
+                int kk = i - Nv_ys[idx];
+                sum += bv_y[N_y + kk] * rv_ys[r_idy + kk * Nz];
             }
 
             rv_zs[r_idz] = sum; 
@@ -342,29 +390,34 @@ void DIGITAL_FILTER::filter() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            int r_idz = (j * (Nz + 2 * N_holder[2]) + N_holder[2] + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
 
             double sum = 0.0;
-            for (int i = 0; i < 2 * Nv_zs[j * Nz + k] + 1; ++i) {
-                int kk = i - Nv_zs[j * Nz + k];
-                sum += bv_z[N_holder[2] + kk] * rv_zs[r_idz + kk]; 
+            for (int i = 0; i < 2 * Nv_zs[idx] + 1; ++i) {
+                int kk = i - Nv_zs[idx];
+                sum += bv_z[N_z + kk] * rv_zs[r_idz + kk]; 
             }
 
-            v_fluc[j * Nz + k] = sum;
+            v_fluc[idx] = sum;
         }
     }
+
+    N_z = N_holder[4];
+    N_y = N_holder[5];
 
     // Filter w' in y-direction.
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            int r_idy = ((j + N_holder[5]) * Nz + k);
-            int r_idz = (j * (Nz + 2 * N_holder[4]) + N_holder[4] + k);
-            double sum = 0.0;
+            int r_idy = ((j + N_y) * Nz + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k); 
+            int idx = j * Nz + k;
 
-            for (int i = 0; i < 2 * Nw_ys[j * Nz + k] + 1; ++i) {
-                int kk = i - Nw_ys[j * Nz + k];
-                sum += bw_y[N_holder[5] + kk] * rw_ys[r_idy + kk * Nz];
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nw_ys[idx] + 1; ++i) {
+                int kk = i - Nw_ys[idx];
+                sum += bw_y[N_y + kk] * rw_ys[r_idy + kk * Nz];
             }
      
             rw_zs[r_idz] = sum; 
@@ -375,61 +428,131 @@ void DIGITAL_FILTER::filter() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            int r_idz = (j * (Nz + 2 * N_holder[4]) + N_holder[4] + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
 
             double sum = 0.0;
-            for (int i = 0; i < 2 * Nw_zs[j * Nz + k] + 1; ++i) {
-                int kk = i - Nw_zs[j * Nz + k];
-                sum += bw_z[N_holder[4] + kk] * rw_zs[r_idz + kk]; 
+            for (int i = 0; i < 2 * Nw_zs[idx] + 1; ++i) {
+
+                int kk = i - Nw_zs[idx];
+                sum += bw_z[N_z + kk] * rw_zs[r_idz + kk]; 
+
             }
 
-            w_fluc[j * Nz + k] = sum;
+            w_fluc[idx] = sum;
         }
     }
 
 }
 
-void DIGITAL_FILTER::apply_RST() {
-    double u_tau = 0.05;
+void DIGITAL_FILTER::correlate_fields() {
+    
+    // Correlate u'
+    if (timestep > 0) {
+        double Ix = 0.8 * d_i;
+
+        for (int j = 0; j < Ny; ++j) {
+            for (int k = 0; k < Nz; ++k) {
+                int idx = j * Nz + k;
+                u_fluc[idx] = u_fluc_old[idx] * 
+            }
+        }
+
+
+        // Correlate v' 
+        Ix = 0.3 * d_i;
+
+        for (int j = 0; j < Ny; ++j) {
+            for (int k = 0; k < Nz; ++k) {
+                v_fluc
+            }
+        }
+
+        // Correlate w'
+        
+        for (int j = 0; j < Ny; ++j) {
+            for (int k = 0; k < Nz; ++k) {
+                v_fluc
+            }
+        }
+    }
 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            double eta = yc[idx] / d_i;
-            double K = 1.5 * u_tau * u_tau * (1.0 - tanh((eta - 0.2) / 0.05));
-            double sigma = sqrt(2.0/3.0 * K);
-
-            u_fluc[idx] *= sigma;
-            v_fluc[idx] *= sigma;
-            w_fluc[idx] *= sigma;
+            
 
         }
     }
 }
 
-void DIGITAL_FILTER::test() {
-    fake_grid();
-    calculate_filter_properties();
-    generate_white_noise();
-    filter();
-    apply_RST();
+void DIGITAL_FILTER::filter(double dt_input) {
 
-    string filename = "velocity_fluc.dat";
-    write_tecplot(filename);
+    dt = dt_input;
+
+    if (timestep == 0) {
+
+        generate_white_noise();
+        filtering_sweeps();
+        correlate_fields(); 
+
+    }
+
 }
+
+
+void DIGITAL_FILTER::test() {
+
+
+    auto prog_start = NOW;
+
+    // Time and run white noise generation
+    auto start = NOW;
+    generate_white_noise();
+    auto end = NOW;
+    auto elapsed = chrono::duration<double>(end - start); 
+    cout << "White noise generation took: " << elapsed.count() << " seconds. " << endl;
+
+    // Time and run filtering operations
+    start = NOW;
+    filtering_sweeps();
+    end = NOW;
+    elapsed = chrono::duration<double>(end - start);
+    cout << "Filtering sweeps took: " << elapsed.count() << " seconds. " << endl;
+
+    // Time and run Reynolds stress tensor operation
+    start = NOW;
+    correlate_fields();
+    end = NOW;
+    elapsed = chrono::duration<double>(end - start);
+    cout << "Correlating fields took: " << elapsed.count() << " seconds. " << endl;
+
+    auto prog_end = NOW;
+    auto prog_elap = chrono::duration<double>(prog_end - prog_start);
+    cout << "Total time: " << prog_elap.count() << " seconds." << endl;
+
+    // Write fluctuations to a file.
+    string filename = "velocity_fluc_contour_plot.dat";
+    write_tecplot(filename);
+
+    filename = "velocity_fluc_line_plot.dat";
+    write_tecplot_line(filename);
+}
+
 void DIGITAL_FILTER::fake_grid() {
     double y_max = 0.01;
     double eta = 0.0;  
     double a = 3.0; 
 
     y = Vector((Ny + 1) * (Nz + 1), 0.0); 
-    yc = Vector(Ny * Nz, 0.0);
     z = Vector((Ny + 1) * (Nz + 1), 0.0); 
+
+    yc = Vector(Ny * Nz, 0.0);
     dy = Vector(Ny * Nz, 0.0); 
     dz = Vector(Ny * Nz, 0.0);
 
 
-    for (int j = Ny + 1; j >= 0; --j) {
+    for (int j = Ny; j >= 0; --j) {
         for (int k = 0; k < Nz + 1; ++k) {
             eta = ( (j) * y_max / (Ny + 1)) / y_max;   
             y[abs(j - Ny) * (Nz + 1) + k] = y_max * (1 - tanh(a * eta) / tanh(a)); 
@@ -522,4 +645,25 @@ void DIGITAL_FILTER::write_tecplot(const string &filename) {
 
     file.close();
     cout << "Finished plotting." << endl;
+}
+void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
+    ofstream file(filename);
+
+    int Z = static_cast<int>(Nz / 2);
+
+    file << "VARIABLES = \"y\", \"u_fluc\", \"v_fluc\", \"w_fluc\"\n";
+    file << "ZONE T=\"Line at z=" << Z << "\", I=" << Ny << ", F=POINT\n";
+    file << "VARLOCATION=([2-4]=CELLCENTERED)\n";
+
+    // Loop over y (rows) at fixed z = k_slice
+    for (int j = 0; j < Ny; ++j) {
+        int idx = j * Nz + Z;  // index in 1D row-major array
+        file << y[j * (Nz + 1) + Z] << " "   // y-coordinate
+             << u_fluc[idx] << " "
+             << v_fluc[idx] << " "
+             << w_fluc[idx] << endl;
+    }
+
+    file.close();
+    cout << "Finished plotting line at z = " << Z << "." << endl;
 }
