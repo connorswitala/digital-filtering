@@ -31,30 +31,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(int Ny, int Nz, double d_i, double d_v, int n_ran
     v_fluc_old = Vector(n_cells);
     w_fluc_old = Vector(n_cells);
 
-    R11 = Vector(n_cells, 0.0);
-    R21 = Vector(n_cells, 0.0);
-    R22 = Vector(n_cells, 0.0);
-    R33 = Vector(n_cells, 0.0);
-
-
-    double u_tau = 0.05;
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;
-            double eta = yc[idx] / d_i;
-            double K = 1.5 * u_tau * u_tau * (1.0 - tanh((eta - 0.2) / 0.05));
-            double sigma = sqrt(2.0/3.0 * K);
-            
-            R11[idx] = sigma;
-            R22[idx] = sigma;
-            R33[idx] = sigma;
-        }
-    }
-
-
-    calculate_filter_properties();
-
-    
+    calculate_filter_properties();    
 }
 
 void DIGITAL_FILTER::generate_white_noise() {
@@ -666,4 +643,83 @@ void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
 
     file.close();
     cout << "Finished plotting line at z = " << Z << "." << endl;
+}
+
+void DIGITAL_FILTER::get_RST(const string filename, int N_values, double rho_e, double U_e,  double mu_e, Vector rhoy) {
+    
+    ifstream fin(filename);
+    if (!fin) {
+        cerr << "Error opening input file\n";
+        return;
+    }
+
+    string line;
+    // skip first 142 lines (header)
+    for (int i = 0; i < 142; ++i) {
+        getline(fin, line);
+    }
+
+
+    Vector urms_tau(N_values), vrms_tau(N_values), wrms_tau(N_values);
+    int count = 0;
+
+    // read remaining lines (330 rows)
+    while (std::getline(fin, line)) {
+        if (line.empty()) continue;
+
+        istringstream iss(line);
+        vector<double> values;
+        double val;
+        while (iss >> val) {
+            values.push_back(val);
+        }
+
+        // columns 9, 10, 11 (1-based), so indices 8, 9, 10 (0-based)
+        if (values.size() >= 11) {
+            if (count < N_values) {
+                urms_tau[count] = values[8];   // urms/utau
+                vrms_tau[count] = values[9];   // vrms/utau
+                wrms_tau[count] = values[10];  // wrms/utau
+                count++;
+            } else {
+                break; // don't exceed vector size
+            }
+        }
+
+        count++;        
+    }
+
+    double val, x_est, Re;
+    Re = rho_e * U_e / mu_e;
+
+    val = d_i / 0.16 * pow(Re, 1.0/7.0);
+    x_est = pow(val, 7.0/6.0); 
+
+    double Cf = 0.027 * pow(Re * x_est, -1.0/7.0);
+    double tau_w = 0.5 * Cf * rho_e * U_e * U_e; 
+
+    Vector u_rms(N_values), v_rms(N_values), w_rms(N_values); 
+
+    for (int j = 0; j < N_values; ++j) {
+        u_rms[j] = urms_tau[j] * sqrt(tau_w / rhoy[j]);
+        v_rms[j] = vrms_tau[j] * sqrt(tau_w / rhoy[j]);
+        w_rms[j] = wrms_tau[j] * sqrt(tau_w / rhoy[j]);
+    }
+
+    R11 = Vector(n_cells, 0.0);
+    R21 = Vector(n_cells, 0.0);
+    R22 = Vector(n_cells, 0.0);
+    R33 = Vector(n_cells, 0.0);
+
+    for (int j = 0; j < Ny; ++j) {
+
+        
+
+    }
+
+
+
+
+
+
 }

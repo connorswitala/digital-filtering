@@ -6,6 +6,7 @@
 #include <vector>
 #include <random>
 #include <string>
+#include <sstream>
 #include <fstream>
 #include <chrono> 
 #include "../pcg-cpp/include/pcg_random.hpp"
@@ -71,6 +72,9 @@ class DIGITAL_FILTER {
     void test(); 
     void display_data(Vector& v);
     void find_mean_variance(Vector& v);
+    void get_RST(const string filename, int N_values, double rho_e, double U_e,  double mu_e, Vector rho_y);
+    
+    void read_grid(int N_x_vertices, int N_y_vertices);
 
     void write_tecplot(const string &filename);
     void write_tecplot_line(const string &filename);
