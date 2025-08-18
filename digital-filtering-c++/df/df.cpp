@@ -1,0 +1,888 @@
+#include "df.hpp"
+
+// Constructor
+DIGITAL_FILTER::DIGITAL_FILTER(double d_i, double rho_e, double U_e, double mu_e,
+    string grid_file, string vel_fluc_file, 
+    int vel_file_offset, int vel_file_N_values) : 
+    d_i(d_i), rho_e(rho_e), U_e(U_e), mu_e(mu_e), 
+    grid_file(grid_file), vel_fluc_file(vel_fluc_file),
+    vel_file_offset(vel_file_offset), vel_file_N_values(vel_file_N_values) {
+
+    
+    read_grid();        // Eventually this will be important. Currently it just makes up my own grid for testing.
+    rho_y_test();       // This will be deleted after I can read in rhoy values and not make some up.
+    get_RST();          // Initializes the Reynold-stress tensor terms
+
+
+
+    // Data structures.
+    Iy = Vector(n_cells);
+    Iz = Vector(n_cells);
+    Nu_ys = vector<int>(n_cells);
+    Nu_zs = vector<int>(n_cells);
+    Nv_ys = vector<int>(n_cells);
+    Nv_zs = vector<int>(n_cells);
+    Nw_ys = vector<int>(n_cells);
+    Nw_zs = vector<int>(n_cells);
+    N_holder = vector<int>(6); 
+    u_fluc = Vector(n_cells);
+    v_fluc = Vector(n_cells);
+    w_fluc = Vector(n_cells);
+    u_filt = Vector(n_cells);
+    v_filt = Vector(n_cells);
+    w_filt = Vector(n_cells);
+    u_filt_old = Vector(n_cells);
+    v_filt_old = Vector(n_cells);
+    w_filt_old = Vector(n_cells);
+    My = Vector(Ny);
+    Uy = Vector(Ny);
+    Ty = Vector(Ny);
+    rho_fluc = Vector(n_cells);
+    T_fluc = Vector(n_cells);
+
+    calculate_filter_properties(); // Initialize coefficients and filter half-widths. 
+    for (int i = 0; i < 6; ++i){
+        cout << N_holder[i] << endl;
+    }
+    
+    // First timestep filtering.
+    generate_white_noise();
+    filtering_sweeps();
+    correlate_fields_ts1();
+    get_rho_T_fluc(); 
+
+}
+
+/**
+ *  This function generates white noise for the filtering. It uses the PCG random number generator 
+ *  to generate normally distributed random numbers.
+ */
+void DIGITAL_FILTER::generate_white_noise() {
+
+    static pcg32 rng{random_device{}()}; 
+    static normal_distribution<> dist(0.0, 1.0);
+
+    auto fill_with_normals = [&](auto &vec) {
+        for (auto &val : vec) {
+            val = dist(rng);
+        }
+    };
+
+    fill_with_normals(ru_ys);
+    fill_with_normals(ru_zs);
+    fill_with_normals(rv_ys);
+    fill_with_normals(rv_zs);
+    fill_with_normals(rw_ys);
+    fill_with_normals(rw_zs);
+}
+
+/**
+ *  This function uses prescribed integral length scales Iz and Iy to find the filter width
+ *  for each cell as well as calculating the convolution coefficients and create the storage for 
+ *  white noise vectors. It is only called in the constructor and is not called again.
+ */
+void DIGITAL_FILTER::calculate_filter_properties() {
+
+    /**
+    *       Find filter half-width (N) for u' when filtering in the z-direction.
+    */
+
+    // Integral length scales
+    Iz_out = 0.4 * d_i; 
+    Iz_inn = 150 * d_v; 
+
+    // Holders for maximum filter widths for creating ghost cells.
+    Ny_max = 0; Nz_max = 0; 
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) { 
+
+            int idx = j * Nz + k;
+
+            Iz[idx] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[idx] / d_i - 0.2) / 0.03));      // This line computes the integral length scale dependant on y
+
+            double n_int = max(1.0, Iz[idx] / dz[idx]);                                                 // This finds the intermediate N value with double precision
+            Nu_zs[idx] = 2 * static_cast<int>(n_int);                                                   // This casts the intermediate variable as an integer to be used in convolution coefficient calculation
+            
+            if (n_int > Nz_max) Nz_max =  2 * static_cast<int>(n_int);                                  // This line checks if the most recently calculated N is bigger than the last one to create boundaries for r_k
+        }
+    }
+
+    N_holder[0] = Nz_max;       // For ease of storage, I pust Ny and Nz max for u, v, and w in a vector.
+    ru_zs = Vector( (Nz + 2 * Nz_max) * Ny, 0.0);  // Create size of random data.
+
+    // Calculate filter coefficients for u' in z-direction
+    bu_z = Vector(2 * Nz_max + 1, 0.0); 
+
+    double sum = 0.0;
+    for (int i = 0; i < 2 * Nz_max + 1; ++i) {
+        int kk = i - Nz_max; 
+        double val = exp(pi_c * abs(kk) / Nz_max);
+        sum += val * val; 
+    }
+    sum = sqrt(sum); 
+
+    for (int i = 0; i < 2 * Nz_max + 1; ++i) {
+        int kk = i - Nz_max;
+        bu_z[i] = exp(pi_c * abs(kk) / Nz_max) / sum;
+    }
+
+    /**
+     * Find N for u' filtering in the y-direction.
+     */
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int idx = j * Nz + k;
+
+            Iy[idx] = 0.67 * Iz[idx];
+            double n_int = max(1.0, Iy[idx] / dy[idx]); 
+
+            Nu_ys[idx] = static_cast<int>(n_int);
+            if (n_int > Ny_max) Ny_max = static_cast<int>(n_int);
+        }
+    }
+
+    N_holder[1] = Ny_max;
+    ru_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
+
+    // Calculate filter coefficients for u' in y direction
+    bu_y = Vector(2 * Ny_max + 1, 0.0);
+    sum = 0.0;
+    for (int i = 0; i < 2 * Ny_max + 1; ++i) {
+        int kk = i - Ny_max; 
+        double val = exp(pi_c *  abs(kk) / Ny_max); 
+        sum += val * val; 
+    }
+
+    sum = sqrt(sum); 
+
+    for (int i = 0; i < 2 * Ny_max + 1; ++i) {
+        int kk = i - Ny_max;
+        bu_y[i] = exp(pi_c * abs(kk) / Ny_max) / sum;
+    }
+
+    
+
+    /** /////////////////////////////////////////////////////////////////////////////////////////
+    *       Find N for v' filtering in the z-direction.
+    */
+
+    Iz_out = 0.3 * d_i;
+    Iz_inn = 75 * d_v; 
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) { 
+
+            int idx = j * Nz + k;
+
+            Iz[idx] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[idx] / d_i - 0.2) / 0.03));       
+
+            double n_int = max(1.0, Iz[idx] / dz[idx]);                                                 
+            Nv_zs[idx] = static_cast<int>(n_int);                                                     
+            
+            if (n_int > Nz_max) Nz_max = static_cast<int>(n_int);                                           
+        }
+    }
+
+    N_holder[2] = Nz_max; 
+    rv_zs = Vector( (Nz + 2 * Nz_max) * Ny, 0.0);  
+
+    // Calculate filter coefficients for v' in z-direction
+    bv_z = Vector(2 * Nz_max + 1, 0.0);
+
+    sum = 0.0;
+    for (int i = 0; i < 2 * Nz_max + 1; ++i) {
+        int kk = i - Nz_max; 
+        double val = exp(pi_c *  abs(kk) / Nz_max);
+        sum += val * val; 
+    }
+
+    sum = sqrt(sum); 
+
+    for (int i = 0; i < 2 * Nz_max + 1; ++i) {
+        int kk = i - Nz_max;
+        bv_z[i] = exp(pi_c * abs(kk) / Nz_max) / sum;
+    }
+
+    /**
+     * Find N for v' filtering in the y-direction.
+     */
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int idx = j * Nz + k;
+
+            Iy[idx] = 0.67 * Iz[idx];
+
+            double n_int = max(1.0, Iy[idx] / dy[idx]);  
+            Nv_ys[idx] = static_cast<int>(n_int);
+
+            if (n_int > Ny_max) Ny_max = static_cast<int>(n_int);
+        }
+    }
+
+    N_holder[3] = Ny_max; 
+    rv_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
+
+    // Calculate filter coefficients for v' in y-direction
+    bv_y = Vector(2 * Ny_max + 1, 0.0);
+
+    sum = 0.0;
+    for (int i = 0; i < 2 * Ny_max + 1; ++i) {
+        int kk = i - Ny_max; 
+        double val = exp(pi_c *  abs(kk) / Ny_max);
+        sum += val * val; 
+    }
+
+    sum = sqrt(sum); 
+
+    for (int i = 0; i < 2 * Ny_max + 1; ++i) {
+        int kk = i - Ny_max;
+        bv_y[i] = exp(pi_c * abs(kk) / Ny_max) / sum;
+    }
+
+    /** //////////////////////////////////////////////////////////////////////////////////////////
+     * Find N for w' filtering in the z-direction.
+     */
+
+    Iz_out = 0.4 * d_i;
+    Iz_inn = 150 * d_v; 
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) { 
+
+            int idx = j * Nz + k;
+
+            Iz[idx] = Iz_inn + (Iz_out - Iz_inn) * 0.5 * (1 + tanh((yc[idx]/ d_i - 0.2) / 0.03));       
+
+            double n_int = max(1.0, Iz[idx] / dz[idx]);                                              
+            Nw_zs[idx] = static_cast<int>(n_int);                                                    
+
+            if (n_int > Nz_max) Nz_max = static_cast<int>(n_int);                                        
+        }
+    }
+    
+    N_holder[4] = Nz_max;
+    rw_zs = Vector( (Nz + 2 * Nz_max) * Ny, 0.0); 
+
+    // Calculate filter coefficients for w' in z-direction
+    bw_z = Vector(2 * Nz_max + 1, 0.0);
+
+    sum = 0.0;
+    for (int i = 0; i < 2 * Nz_max + 1; ++i) {
+        int kk = i - Nz_max; 
+        double val = exp(pi_c *  abs(kk) / Nz_max);
+        sum += val * val; 
+    }
+
+    sum = sqrt(sum); 
+
+    for (int i = 0; i < 2 * Nz_max + 1; ++i) {
+        int kk = i - Nz_max;
+        bw_z[i] = exp(pi_c * abs(kk) / Nz_max) / sum;
+    } 
+
+    /**
+     * Find N for w' filtering in the y-direction.
+     */
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int idx = j * Nz + k;
+
+            Iy[idx] = 0.67 * Iz[idx];
+
+            double n_int = max(1.0, Iy[idx] / dy[idx]);  
+            Nw_ys[idx] = static_cast<int>(n_int);
+
+            if (n_int > Ny_max) Ny_max = static_cast<int>(n_int);
+        }
+    }
+
+    N_holder[5] = Ny_max;
+    rw_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
+
+    // Calculate filter coefficients for w' in y-direction
+    bw_y = Vector(2 * Ny_max + 1, 0.0);
+
+    sum = 0.0;
+    for (int i = 0; i < 2 * Ny_max + 1; ++i) {
+        int kk = i - Ny_max; 
+        double val = exp(pi_c *  abs(kk) / Ny_max);
+        sum += val * val; 
+    }
+
+    sum = sqrt(sum); 
+
+    for (int i = 0; i < 2 * Ny_max + 1; ++i) {
+        int kk = i - Ny_max;
+        bw_y[i] = exp(pi_c * abs(kk) / Ny_max) / sum;
+    }
+
+}
+
+/** 
+ *  This functions filters the random data in y and z seeps using the filter coefficients and filter widths 
+ *  previously calculated. The filtering is done in two sweeps, first in y and then in z direction.
+ *  */
+
+void DIGITAL_FILTER::filtering_sweeps() {
+
+    int N_z = N_holder[0];
+    int N_y = N_holder[1];    
+
+    // Filter u' in y-direction. 
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int r_idy = ((j + N_y) * Nz + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k); 
+            int idx = j * Nz + k;
+
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nu_ys[idx] + 1; ++i) {
+
+                int kk = i - Nu_ys[idx];
+                sum += bu_y[N_y + kk] * ru_ys[r_idy + kk * Nz];
+            }
+
+            ru_zs[r_idz] = sum; 
+        }
+    }
+
+    // Filter u' in z-direction.
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
+
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nu_zs[idx] + 1; ++i) {
+                int kk = i - Nu_zs[idx];
+                sum += bu_z[N_z + kk] * ru_zs[r_idz + kk]; 
+            }
+
+            u_filt[idx] = sum;
+        }
+    }
+
+    N_z = N_holder[2];
+    N_y = N_holder[3];
+
+    // Filter v' in y-direction.
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int r_idy = ((j + N_y) * Nz + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
+
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nv_ys[idx] + 1; ++i) {
+                int kk = i - Nv_ys[idx];
+                sum += bv_y[N_y + kk] * rv_ys[r_idy + kk * Nz];
+            }
+
+            rv_zs[r_idz] = sum; 
+        }
+    }
+
+    // Filter v' in z-direction.
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
+
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nv_zs[idx] + 1; ++i) {
+                int kk = i - Nv_zs[idx];
+                sum += bv_z[N_z + kk] * rv_zs[r_idz + kk]; 
+            }
+
+            v_filt[idx] = sum;
+        }
+    }
+
+    N_z = N_holder[4];
+    N_y = N_holder[5];
+
+    // Filter w' in y-direction.
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int r_idy = ((j + N_y) * Nz + k);
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k); 
+            int idx = j * Nz + k;
+
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nw_ys[idx] + 1; ++i) {
+                int kk = i - Nw_ys[idx];
+                sum += bw_y[N_y + kk] * rw_ys[r_idy + kk * Nz];
+            }
+     
+            rw_zs[r_idz] = sum; 
+        }
+    }
+
+    // Filter w' in z-direction.
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+
+            int r_idz = (j * (Nz + 2 * N_z) + N_z + k);
+            int idx = j * Nz + k;
+
+            double sum = 0.0;
+            for (int i = 0; i < 2 * Nw_zs[idx] + 1; ++i) {
+
+                int kk = i - Nw_zs[idx];
+                sum += bw_z[N_z + kk] * rw_zs[r_idz + kk]; 
+
+            }
+
+            w_filt[idx] = sum;
+        }
+    }
+
+}
+
+/**
+ *  This scales the fluctuations by the Reynolds stress tensor R_ij. It is only for the first time step 
+ *  so it doesnt correlate the old fluctuations with the new ones. 
+ */
+void DIGITAL_FILTER::correlate_fields_ts1() {
+    
+    double b;
+    
+    for (int j = 0; j < Ny; ++j) {
+
+        if (R11[j] < 1e-10) {
+            b = 0.0;
+        }       
+        else {
+            b = R21[j] / sqrt(R11[j]); 
+        } 
+
+        for (int k = 0; k < Nz; ++k) {
+
+            int idx = j * Nz + k;            
+
+            u_fluc[idx] = sqrt(R11[j]) * u_filt[idx];
+            v_fluc[idx] = b * u_filt[idx] + sqrt(R22[j] - b * b) * v_filt[idx];
+            w_fluc[idx] = sqrt(R33[j]) * w_filt[idx];
+        }
+    }
+
+    set_old();
+}
+
+/**
+ *  This scales the fluctuations by the Reynolds stress tensor R_ij. It then correclates the old fields 
+ *  with the new ones by using an integral length/time scale.
+ */
+void DIGITAL_FILTER::correlate_fields() {
+    
+    double b;
+
+    // Timestep correlation for u'
+    double Ix = 0.8 * d_i;
+    double lt = Ix / U_e;
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;
+            u_filt[idx] = u_filt_old[idx] * exp(-M_PI * dt / (2 * lt)) + u_filt[idx] * sqrt(1 - exp(-M_PI * dt / lt));
+        }
+    }
+
+    // Timestep correlation v'
+    Ix = 0.3 * d_i;
+    lt = Ix / U_e;
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;
+            v_filt[idx] = v_filt_old[idx] * exp(-M_PI * dt / (2 * lt)) + v_filt[idx] * sqrt(1 - exp(-M_PI * dt / lt));
+        }
+    }
+
+    // Timestep correlation in w'
+    Ix = 0.3 * d_i;
+    lt = Ix / U_e;
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;
+            w_filt[idx] = w_filt_old[idx] * exp(-M_PI * dt / (2 * lt)) + w_filt[idx] * sqrt(1 - exp(-M_PI * dt / lt));
+        }
+    }
+
+
+    // Scale by Reynolds-stress tensor
+    
+    for (int j = 0; j < Ny; ++j) {
+
+        if (R11[j] < 1e-10) {
+            b = 0.0;
+        }       
+        else {
+            b = R21[j] / sqrt(R11[j]); 
+        } 
+
+        for (int k = 0; k < Nz; ++k) {
+
+            int idx = j * Nz + k;            
+
+            u_fluc[idx] = sqrt(R11[j]) * u_filt[idx];
+            v_fluc[idx] = b * u_filt[idx] + sqrt(R22[j] - b * b) * v_filt[idx];
+            w_fluc[idx] = sqrt(R33[j]) * w_filt[idx];
+        }
+    }    
+
+    set_old();
+}
+
+/**
+ * This sets old fluctuations to new ones. 
+ */
+void DIGITAL_FILTER::set_old() {
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;
+            u_filt_old[idx] = u_fluc[idx];
+            v_filt_old[idx] = v_fluc[idx];
+            w_filt_old[idx] = w_fluc[idx];
+        }
+    }
+
+}
+
+/** 
+ *  This function uses the Strong Reynolds Analogy to find fluctuations for temperature and density assuming 
+ *  pressure is constant in the boundary layer. It currently assumes constant gamma = 1.4
+ */
+void DIGITAL_FILTER::get_rho_T_fluc() {
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {            
+
+            double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j] * u_fluc[j * Nz + k];
+            T_fluc[j * Nz + k] = val; 
+
+            rho_fluc[j * Nz + k] = -val / Ty[j] * rhoy[j]; 
+
+        }
+    }
+}
+
+/**
+ *  This runs all the filtering processes and updates the fluctuations. This is the only function that should 
+ *  be called from the main program after initializing the DIGITAL_FILTER object. It generates white noise, filters 
+ *  the velocity fluctuations in y and z sweeps, and correlates the fields. @param dt_input is the time step size 
+ *  from the CFD simulation.
+ */
+void DIGITAL_FILTER::filter(double dt_input) {
+    dt = dt_input;
+    generate_white_noise();
+    filtering_sweeps();
+    correlate_fields(); 
+    get_rho_T_fluc(); 
+}
+
+/**
+ *  This function is used for testing purposes. It can be used to test the functionality of the DIGITAL_FILTER class.
+ */
+void DIGITAL_FILTER::test() {
+
+    generate_white_noise();
+    filtering_sweeps();
+    correlate_fields_ts1(); 
+
+    // Write fluctuations to a file.
+    string filename = "velocity_fluc_contour_plot.dat";
+    write_tecplot(filename);
+
+    filename = "velocity_fluc_line_plot.dat";
+    write_tecplot_line(filename);
+}
+
+/**
+ *  This function finds the mean and variance of a vector and displays them. It was used to double check the RNG. 
+ */
+void DIGITAL_FILTER::find_mean_variance(Vector& v) {
+    double mean_sum = 0.0, var_sum = 0.0;
+
+    for (int i = 0; i < n_cells; ++i) {
+        mean_sum += v[i];
+    }
+
+    double mean = mean_sum / n_cells;
+
+    for (int i = 0; i < n_cells; ++i) {
+        var_sum += (v[i] - mean) * (v[i] - mean);
+    }
+
+    double variance = var_sum / n_cells;
+
+    cout << "Mean: " << mean << "\t Variance: " << variance << endl;
+}
+
+/**
+ *  This function displays the data in the vector. It is used for debugging purposes.
+ */
+void DIGITAL_FILTER::display_data(Vector& v) {
+    for (auto val : v) {
+        std::cout << val << std::endl;
+    }
+}
+
+/**
+ *  This function reads the velocity fluctuation data from a file and calculates the Reynolds stress tensor R_ij. 
+ *  It currently uses a number of turbulent boundary layer approximations to estimate the skin friction coefficient 
+ *  and the friction velocity. The data is taken from a DNS paper and rescaled to the inflow conditions. It is only 
+ *  called once in the constructor to initialize the R_ij tensor.
+ */
+void DIGITAL_FILTER::get_RST() {
+    
+    // Open the velocity fluctuation file.
+    ifstream fin(vel_fluc_file);
+    if (!fin) {
+        cerr << "Error opening input file\n";
+        return;
+    }
+
+    string line;
+    // Skip the header lines.
+    for (int i = 0; i < vel_file_offset; ++i) {
+        getline(fin, line);
+    }
+
+    // Create data structures to input file data.
+    Vector urms_us(vel_file_N_values), 
+           vrms_us(vel_file_N_values), 
+           wrms_us(vel_file_N_values), 
+           uvrms_us(vel_file_N_values);
+           
+
+    int count = 0;
+
+    // Read remaining lines and gather data.
+    while (getline(fin, line)) {
+        if (line.empty()) continue;
+
+        istringstream iss(line);
+        vector<double> values;
+        double val;
+        while (iss >> val) {
+            values.push_back(val);
+        }
+
+        // columns 9, 10, 11 (1-based), so indices 8, 9, 10 (0-based)  
+        if (count < vel_file_N_values) {
+            urms_us[count] = values[8];   // urms_utau
+            wrms_us[count] = values[9];   // vrms_utau
+            vrms_us[count] = values[10];  // wrms_utau
+            uvrms_us[count] = values[15]; // upwp_utausq
+        }
+        count++;       
+    }
+
+    
+    double val, x_est, Re;      
+    Re = rho_e * U_e / mu_e;                                // Re_x / x based on freestream conditions.
+
+    val = d_i / 0.37 * pow(Re, 1.0/5.0);
+    x_est = pow(val, 5.0/4.0);                              // Estimated x-location from inflow delta.
+    cout << "x_est = " << x_est << endl;
+
+    double Cf = 0.0576 / pow(Re * x_est, 1.0/5.0);          // Estimate skin friction coefficient using Prandtl's one-seventh-power law.
+    double tau_w = 0.5 * Cf * rho_e * U_e * U_e;            // Skin friction
+    double u_tau = sqrt(tau_w / rhoy[0]);
+
+    cout << "C_f = " << Cf << endl;
+    cout << "tau_w = " << tau_w << endl;
+    cout << "u_tau = " << u_tau << endl;
+    Vector u_rms(vel_file_N_values), v_rms(vel_file_N_values), w_rms(vel_file_N_values), uv_rms(vel_file_N_values); 
+
+    // Scale u'_rms / u* to inflow u*
+    for (int j = 0; j < vel_file_N_values; ++j) {
+        double u_Mor = sqrt(tau_w / rhoy[j]);
+        u_rms[j] = urms_us[j] * u_Mor;
+        v_rms[j] = vrms_us[j] * u_Mor;
+        w_rms[j] = wrms_us[j] * u_Mor;
+        uv_rms[j] = uvrms_us[j] * u_Mor * u_Mor;
+    }
+
+    R11 = Vector(vel_file_N_values, 0.0);
+    R21 = Vector(vel_file_N_values, 0.0);
+    R22 = Vector(vel_file_N_values, 0.0);
+    R33 = Vector(vel_file_N_values, 0.0);
+
+    for (int j = 0; j < vel_file_N_values; ++j) {
+        R11[j] = u_rms[j] * u_rms[j];
+        R21[j] = -uv_rms[j];
+        R22[j] = v_rms[j] * v_rms[j];
+        R33[j] = w_rms[j] * w_rms[j];
+    }
+
+    d_v = mu_w / (rhoy[0] * u_tau);     // This will need
+}
+
+/**
+ *  This function writes the velocity fluctuations to a Tecplot file for visualization. It writes the z, y, u_fluc, 
+ *  v_fluc, and w_fluc data. @param filename is the name of the file to write to.
+ */
+void DIGITAL_FILTER::write_tecplot(const string &filename) {
+
+    ofstream file(filename);
+    file << "VARIABLES = \"z\", \"y\", \"u_fluc\", \"v_fluc\", \"w_fluc\" \n";
+    file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
+    file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
+
+
+    // Loop over y (rows) and z (columns)
+    for (int j = 0; j < Ny + 1; ++j) {
+        for (int k = 0; k < Nz + 1; ++k) {
+            int idx = j * (Nz + 1) + k;  // row-major: y-major
+            file << z[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny + 1; ++j) {
+        for (int k = 0; k < Nz + 1; ++k) {
+            int idx = j * (Nz + 1) + k;  // row-major: y-major
+            file << y[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << u_fluc[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << v_fluc[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << w_fluc[idx] << endl;
+        }
+    }
+
+    file.close();
+    cout << "Finished plotting." << endl;
+}
+
+/**
+ * This function writes the velocity fluctuations at a fixed z-slice to a Tecplot file for visualization.
+ */
+void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
+    ofstream file(filename);
+
+    int Z = static_cast<int>(Nz / 2);
+
+    file << "VARIABLES = \"y\", \"u_fluc\", \"v_fluc\", \"w_fluc\"\n";
+    file << "ZONE T=\"Line at z=" << Z << "\", I=" << Ny << ", F=POINT\n";
+    file << "VARLOCATION=([2-4]=CELLCENTERED)\n";
+
+    // Loop over y (rows) at fixed z = k_slice
+    for (int j = 0; j < Ny; ++j) {
+        int idx = j * Nz + Z;  // index in 1D row-major array
+        file << y[j * (Nz + 1) + Z] << " "   // y-coordinate
+             << u_fluc[idx] << " "
+             << v_fluc[idx] << " "
+             << w_fluc[idx] << endl;
+    }
+
+    file.close();
+    cout << "Finished plotting line at z = " << Z << "." << endl;
+}
+
+/**
+ *  This function is used to test the rho_y vector.
+ */
+
+void DIGITAL_FILTER::rho_y_test() {
+    rhoy = Vector(Ny, 0.0);
+    for (int j = 0; j < Ny; ++j) {
+        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.5);
+    }
+}
+
+/** 
+ *  Somehow, this function reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
+ *  I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
+ *  dy, dz and intgeres Nz, Ny populated with the data from the file. 
+*/
+
+void DIGITAL_FILTER::read_grid() {
+
+    Nz = 450;
+    Ny = vel_file_N_values;
+    n_cells = Nz * Ny;
+
+    cout << "CFD number of cells: " << n_cells << endl;
+
+    y = Vector((Ny + 1) * (Nz + 1), 0.0); 
+    z = Vector((Ny + 1) * (Nz + 1), 0.0); 
+
+    yc = Vector(n_cells, 0.0);
+    dy = Vector(n_cells, 0.0); 
+    dz = Vector(n_cells, 0.0);
+
+    /**
+     *  =============================: This part will be removed :=================================
+     *  Is just a holder for y and z values since I cant read into grid yet. Needs to be replaced with real grid grabber. 
+     */
+
+    double y_max = 0.01;
+    double eta = 0.0;  
+    double a = 3.0; 
+
+    for (int j = Ny; j >= 0; --j) {
+        for (int k = 0; k < Nz + 1; ++k) {
+            eta = ( (j) * y_max / (Ny + 1)) / y_max;   
+            y[abs(j - Ny) * (Nz + 1) + k] = y_max * (1 - tanh(a * eta) / tanh(a)); 
+            z[j * (Nz + 1) + k] = k * 0.000133;
+        }
+    }
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            dy[j * Nz + k] = y[(j + 1) * (Nz + 1) + k] - y[j * (Nz + 1) + k];
+            dz[j * Nz + k] = 0.000133;        // This is just a holder for dz
+            yc[j * Nz + k] = 0.25 * (y[j * (Nz + 1) + k] + y[(j + 1) * (Nz + 1) + k] + y[j * (Nz + 1) + k + 1] + y[(j + 1) * (Nz + 1) + k + 1]);
+        }
+    }
+
+    /**
+     *   Assuming dy is constant in span-wise direction, find the cell which has a y-center at 2 * d_i. This cell's
+     *   index in the j-direction is the maximum size of our digital filtering grid, since anything above this should be
+     *   0 since we our well outside the boundary layer. Reset Ny to this value from Ny of the old which was the entire
+     *   size of the computational grid. 
+     */
+
+    for (int j = 0; j < Ny; ++j) {
+        if (yc[j * Nz] > 1.5 * d_i) {
+            Ny = j;
+            break;
+        }
+    }
+}
+
