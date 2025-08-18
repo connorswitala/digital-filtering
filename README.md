@@ -4,11 +4,12 @@ This library contains the class "DIGITAL_FILTER" which was created to use digita
 
 ## Directories 
 1) "digital-filtering-c++" is the c++ directory for the class that has both a .hpp and .cpp file in a nested one called "df". 
-2) "digital-filtering-fortran" is the fortran directory 
-2) "files" is where data files are stores. Currently, just the fluctuation file from Duan et all is there. This is also where mean profiles for the boundary layer flow will be store. 
+2) "digital-filtering-fortran" is the fortran directory. The main module is in the nested "df" directory.
+3) "files" is where data files are stored. Currently, just the fluctuation file from Duan et all is there. This is also where mean profiles for the boundary layer flow will be store. 
 4) "pcg-cpp" is the PCG library that is used for white noise random number generation.
 5) "programs" is where the build executables go (really just for test programs)
-6) "test" it just a directory with main.cpp to write test programs.
+6) "build" is where the built object files go. 
+7) The c++ and fortran folders each have a "test" folder where I run test programs. 
 
 
 ## Necessary inputs
