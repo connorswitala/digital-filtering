@@ -3,9 +3,9 @@
 This library contains the class "DIGITAL_FILTER" which was created to use digital filtering to seed inflow with velocity, temperature, and density fluctuations. The code is currently "complete" in the sense that everything is set up to create velocity fluctuations. There are currently data structures that are used that have no values attached to them (or test values added in). Once these are taken care of it should work fine. 
 
 ## Directories 
-1) "build" is just the object .o directory
-2) "df" is the main directory that contains the df.hpp header file and the df.cpp main code.
-3) "files" is where data files are stores. Currently, just the fluctuation file from Duan et all is there. This is also where mean profiles for the boundary layer flow will be store. 
+1) "digital-filtering-c++" is the c++ directory for the class that has both a .hpp and .cpp file in a nested one called "df". 
+2) "digital-filtering-fortran" is the fortran directory 
+2) "files" is where data files are stores. Currently, just the fluctuation file from Duan et all is there. This is also where mean profiles for the boundary layer flow will be store. 
 4) "pcg-cpp" is the PCG library that is used for white noise random number generation.
 5) "programs" is where the build executables go (really just for test programs)
 6) "test" it just a directory with main.cpp to write test programs.
