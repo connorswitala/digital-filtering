@@ -6,6 +6,7 @@ module DIGITAL_FILTERING
     public :: digital_filter_type, create_digital_filter, filter
 
     INTEGER,PARAMETER :: dp = selected_real_kind(15)
+    real(kind=dp), PARAMETER :: pi = acos(-1.0_dp)
 
     ! Define a type (like a class)
     type :: digital_filter_type
@@ -64,6 +65,32 @@ contains
         df%vel_file_N_values = vel_file_N_values
 
         call read_grid(df)
+        call rhoy_test(df)
+
+        allocate(df%Iy(df%n_cells))
+        allocate(df%Iz(df%n_cells))
+        allocate(df%Nu_ys(df%n_cells))
+        allocate(df%Nu_zs(df%n_cells))
+        allocate(df%Nv_ys(df%n_cells))
+        allocate(df%Nv_zs(df%n_cells))
+        allocate(df%Nw_ys(df%n_cells))
+        allocate(df%Nw_zs(df%n_cells))
+        allocate(df%N_holder(6))
+        allocate(df%u_fluc(df%n_cells))
+        allocate(df%v_fluc(df%n_cells))
+        allocate(df%w_fluc(df%n_cells))
+        allocate(df%u_filt(df%n_cells))
+        allocate(df%v_filt(df%n_cells))
+        allocate(df%w_filt(df%n_cells))
+        allocate(df%u_filt_old(df%n_cells))
+        allocate(df%v_filt_old(df%n_cells))
+        allocate(df%w_filt_old(df%n_cells))
+        allocate(df%My(df%Ny))
+        allocate(df%Uy(df%Ny))
+        allocate(df%Ty(df%Ny))
+        allocate(df%rho_fluc(df%n_cells))
+        allocate(df%T_fluc(df%n_cells))
+
 
     end function create_digital_filter
 
@@ -171,6 +198,169 @@ contains
     
     subroutine calculate_filter_properties(df)
         type(digital_filter_type), intent(inout) :: df
+        implicit none
+
+        integer Ny_max, Nz_max, j, k, idx, kk
+        real(kind=dp) n_int, val
+
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for u' when filtering in the z-direction
+        !=============================================================================================
+
+        ! Define integral length scales
+        real(kind=dp) Iz_out = 0.4_dp * df%d_i
+        real(kind=dp) Iz_inn = 150_dp * df%d_v
+
+        ! Holdering for maximum filter widths. Used for creating ghost cells.
+        integer Ny_max = 0, Nz_max = 0 
+
+        !! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, Ny
+            do k = 1, Nz
+
+                idx = (j - 1) * Nz + k
+                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
+
+                n_int = max(1.0_dp, df%Iz(idx) / df%dx(idx))
+                df%Nz_us(idx) = 2 * int(n_int)
+
+                if (n_int > Nz_max) Nz_max = 2 * int(n_int)
+
+            end do  
+        end do
+
+        ! allocate space for random data and filter coefficient arrays
+        N_holder(1) = Nz_max
+        allocate(df%ru_zs(df%Nz + 2 * Nz_max) * df%Ny) 
+        allocate(df%bu_z(2 * Nz_max + 1))              
+
+        ! Loop that calculates sum square of filter coefficients for u' in z-direction
+        real(kind=dp) sum = 0.0_dp
+        do i = 1, 2 * Nz_max + 1
+            kk = i - Nz_max
+            val = exp(-2.0_dp * pi * abs(kk) / Nz_max)
+            sum = sum + val * val
+        end do
+        sum = sqrt(sum)
+
+        ! Loop that calculates individual filter coefficients
+        do i = 1, 2 * Nz_max + 1
+            kk = i - Nz_max
+            df%bu_z(i) = exp(-2 * pi * abs(kk) / Nz_max) / sum
+        end do
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for u' when filtering in the y-direction
+        !=============================================================================================
+
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, Ny
+            for k = 1, Nz
+                idx = (j - 1) * Nz + k
+                df%Iy(idx) = 0.67_dp * df%Iz(idx)
+                n_int = max(1.0_dp, df%(Iy(idx)) / df%dy(idx))
+                df%Nu_ys(idx) = 2 * int(n_int)
+                if (n_int > Ny_max) Ny_max = 2 * int(n_int)
+            end do
+        end do
+
+        ! allocate space for random data and filter coefficient arrays
+        df%N_holder(2) = Ny_max
+        allocate(df%ru_ys(df%Nz * (2 * Ny_max + df%Ny)))
+        allocate(df%bu_y)(2 * Ny_max + 1)
+
+
+        ! Loop that calculates sum square of filter coefficients
+        sum = 0.0_dp
+        do i = 1, 2 * Ny_max + 1
+            kk = i - Ny_max
+            val = exp(-2.0_dp * pi * abs(kk) / Ny_max)
+            sum = sum + val * val
+        end do
+        sum = sqrt(sum)
+
+        ! Loop that calculates individual filter coefficients
+        do i = 1, 2 * Ny_max + 1
+            kk = i - Ny_max
+            df%bu_y(i) = exp(-2.0_dp * pi * abs(kk) / Ny_max) / sum
+        end do  
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for v' when filtering in the z-direction
+        !=============================================================================================
+
+        ! Reset max filter widths to 0
+        Nz_max = 0
+        Ny_max = 0
+
+        ! Define integral length scales
+        Iz_out = 0.3_dp * df%d_i
+        Iz_inn = 75.0_dp * df%d_v
+
+        ! Loop that calculates integral length scales per cell and filter half-widths
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k 
+                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
+                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
+                df%Nv_zs(idx) = 2 * int(n_int)
+                if (n_int > Nz_max) Nz_max = 2 * int(n_int)
+            end do  
+        end do
+
+        ! allocate space for random data and filter coefficient arrays
+        df%N_holder(3) = Nz_max
+        allocate(df%rv_zs(df%Nz + 2 * Nz_max) * df%Ny)
+        allocate(df%bv_z(2 * Nz_max + 1))
+
+        ! Loop that calculates sum square of filter coefficients
+        sum = 0.0
+        do i = 1, 2 * Nz_max + 1
+            kk = i - Nz_max
+            val = exp(-2.0_dp * abs(kk) / Nz_max)
+            sum = sum + val *  val
+        end do
+        sum = sqrt(sum)
+
+        ! Loop that calculates individual filter coefficients
+        do i = 1, 2 * Nz_max + 1
+            kk = i - Nz_max
+            df%bv_z(i) = exp(-2.0_dp * pi * abs(kk) / Nz_max) / sum
+        end do
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for v' when filtering in the y-direction
+        !=============================================================================================
+
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+                df%Iy(idx) = 0.67 * df%Iz(idx)
+                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
+                df%Nv_ys(idx) = 2 * int(n_int)
+                if (n_int > Ny_max) Ny_max = 2 * int(n_int)
+            end do
+        end do
+
+        ! allocate space for random data and filter coefficient arrays
+        df%N_holder(4) = Ny_max
+        allocate(df%rv_ys(df%Nz * (2 * Ny_max + df%Ny)))
+        allocate(df%bv_y(2 * Ny_max + 1))
+
+        ! Loop that calculates sum square of filter coefficients
+        sum = 0.0_dp
+
+
+
+        ! Reset max filter widths to 0
+        Nz_max = 0
+        Ny_max = 0
+
+
+                    
+
     end subroutine
 
     subroutine correlate_fields(df)
