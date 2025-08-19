@@ -53,6 +53,65 @@ DIGITAL_FILTER::DIGITAL_FILTER(double d_i, double rho_e, double U_e, double mu_e
 
 }
 
+/** 
+ *  Somehow, this function reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
+ *  I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
+ *  dy, dz and intgeres Nz, Ny populated with the data from the file. 
+*/
+void DIGITAL_FILTER::read_grid() {
+
+    Nz = 450;
+    Ny = vel_file_N_values;
+    n_cells = Nz * Ny;
+
+    cout << "CFD number of cells: " << n_cells << endl;
+
+    y = Vector((Ny + 1) * (Nz + 1), 0.0); 
+    z = Vector((Ny + 1) * (Nz + 1), 0.0); 
+
+    yc = Vector(n_cells, 0.0);
+    dy = Vector(n_cells, 0.0); 
+    dz = Vector(n_cells, 0.0);
+
+    /**
+     *  =============================: This part will be removed :=================================
+     *  Is just a holder for y and z values since I cant read into grid yet. Needs to be replaced with real grid grabber. 
+     */
+
+    double y_max = 0.01;
+    double eta = 0.0;  
+    double a = 3.0; 
+
+    for (int j = Ny; j >= 0; --j) {
+        for (int k = 0; k < Nz + 1; ++k) {
+            eta = ( (j) * y_max / (Ny + 1)) / y_max;   
+            y[abs(j - Ny) * (Nz + 1) + k] = y_max * (1 - tanh(a * eta) / tanh(a)); 
+            z[j * (Nz + 1) + k] = k * 0.000133;
+        }
+    }
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            dy[j * Nz + k] = y[(j + 1) * (Nz + 1) + k] - y[j * (Nz + 1) + k];
+            dz[j * Nz + k] = 0.000133;        // This is just a holder for dz
+            yc[j * Nz + k] = 0.25 * (y[j * (Nz + 1) + k] 
+            + y[(j + 1) * (Nz + 1) + k] 
+            + y[j * (Nz + 1) + k + 1] 
+            + y[(j + 1) * (Nz + 1) + k + 1]);
+        }
+    }
+}
+
+/**
+ *  This function is used to test the rho_y vector.
+ */
+void DIGITAL_FILTER::rho_y_test() {
+    rhoy = Vector(Ny, 0.0);
+    for (int j = 0; j < Ny; ++j) {
+        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.5);
+    }
+}
+
 /**
  *  This function generates white noise for the filtering. It uses the PCG random number generator 
  *  to generate normally distributed random numbers.
@@ -812,77 +871,5 @@ void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
 
     file.close();
     cout << "Finished plotting line at z = " << Z << "." << endl;
-}
-
-/**
- *  This function is used to test the rho_y vector.
- */
-
-void DIGITAL_FILTER::rho_y_test() {
-    rhoy = Vector(Ny, 0.0);
-    for (int j = 0; j < Ny; ++j) {
-        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.5);
-    }
-}
-
-/** 
- *  Somehow, this function reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
- *  I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
- *  dy, dz and intgeres Nz, Ny populated with the data from the file. 
-*/
-
-void DIGITAL_FILTER::read_grid() {
-
-    Nz = 450;
-    Ny = vel_file_N_values;
-    n_cells = Nz * Ny;
-
-    cout << "CFD number of cells: " << n_cells << endl;
-
-    y = Vector((Ny + 1) * (Nz + 1), 0.0); 
-    z = Vector((Ny + 1) * (Nz + 1), 0.0); 
-
-    yc = Vector(n_cells, 0.0);
-    dy = Vector(n_cells, 0.0); 
-    dz = Vector(n_cells, 0.0);
-
-    /**
-     *  =============================: This part will be removed :=================================
-     *  Is just a holder for y and z values since I cant read into grid yet. Needs to be replaced with real grid grabber. 
-     */
-
-    double y_max = 0.01;
-    double eta = 0.0;  
-    double a = 3.0; 
-
-    for (int j = Ny; j >= 0; --j) {
-        for (int k = 0; k < Nz + 1; ++k) {
-            eta = ( (j) * y_max / (Ny + 1)) / y_max;   
-            y[abs(j - Ny) * (Nz + 1) + k] = y_max * (1 - tanh(a * eta) / tanh(a)); 
-            z[j * (Nz + 1) + k] = k * 0.000133;
-        }
-    }
-
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            dy[j * Nz + k] = y[(j + 1) * (Nz + 1) + k] - y[j * (Nz + 1) + k];
-            dz[j * Nz + k] = 0.000133;        // This is just a holder for dz
-            yc[j * Nz + k] = 0.25 * (y[j * (Nz + 1) + k] + y[(j + 1) * (Nz + 1) + k] + y[j * (Nz + 1) + k + 1] + y[(j + 1) * (Nz + 1) + k + 1]);
-        }
-    }
-
-    /**
-     *   Assuming dy is constant in span-wise direction, find the cell which has a y-center at 2 * d_i. This cell's
-     *   index in the j-direction is the maximum size of our digital filtering grid, since anything above this should be
-     *   0 since we our well outside the boundary layer. Reset Ny to this value from Ny of the old which was the entire
-     *   size of the computational grid. 
-     */
-
-    for (int j = 0; j < Ny; ++j) {
-        if (yc[j * Nz] > 1.5 * d_i) {
-            Ny = j;
-            break;
-        }
-    }
 }
 
