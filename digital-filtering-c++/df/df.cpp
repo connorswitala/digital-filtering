@@ -167,9 +167,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     // Allocate space for random data and filter coefficient arrays
     N_holder[0] = Nz_max; 
-    ru_zs = Vector( (Nz + 2 * Nz_max) * Ny, 0.0);
     depth = 2 * Nz_max + 1;    
-    bu_z = Vector(depth * n_cells, 0.0); 
+    ru_zs = Vector( (Nz + 2 * Nz_max) * Ny);
+    bu_z = Vector(depth * n_cells); 
 
     //This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
@@ -224,8 +224,8 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     // Allocate space for random data and filter coefficient arrays.
     N_holder[1] = Ny_max;
+    depth = 2 * Ny_max + 1;   
     ru_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
-    depth = 2 * Ny_max + 1;
     bu_y = Vector(depth * n_cells, 0.0);
 
     //This loop calculates the vector of filter coefficients for each cell (i,j).
@@ -653,6 +653,7 @@ void DIGITAL_FILTER::correlate_fields_ts1() {
 void DIGITAL_FILTER::correlate_fields() {
     
     double b;
+    double pi = 3.141592654;
 
     // Timestep correlation for u'
     double Ix = 0.8 * d_i;
@@ -661,7 +662,7 @@ void DIGITAL_FILTER::correlate_fields() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            u_filt[idx] = u_filt_old[idx] * exp(-M_PI * dt / (2 * lt)) + u_filt[idx] * sqrt(1 - exp(-M_PI * dt / lt));
+            u_filt[idx] = u_filt_old[idx] * exp(-pi * dt / (2 * lt)) + u_filt[idx] * sqrt(1 - exp(-pi * dt / lt));
         }
     }
 
@@ -672,7 +673,7 @@ void DIGITAL_FILTER::correlate_fields() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            v_filt[idx] = v_filt_old[idx] * exp(-M_PI * dt / (2 * lt)) + v_filt[idx] * sqrt(1 - exp(-M_PI * dt / lt));
+            v_filt[idx] = v_filt_old[idx] * exp(-pi * dt / (2 * lt)) + v_filt[idx] * sqrt(1 - exp(-pi * dt / lt));
         }
     }
 
@@ -683,7 +684,7 @@ void DIGITAL_FILTER::correlate_fields() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            w_filt[idx] = w_filt_old[idx] * exp(-M_PI * dt / (2 * lt)) + w_filt[idx] * sqrt(1 - exp(-M_PI * dt / lt));
+            w_filt[idx] = w_filt_old[idx] * exp(-pi * dt / (2 * lt)) + w_filt[idx] * sqrt(1 - exp(-pi * dt / lt));
         }
     }
 
@@ -764,17 +765,19 @@ void DIGITAL_FILTER::filter(double dt_input) {
  */
 void DIGITAL_FILTER::test() {
 
-    generate_white_noise();
-    filtering_sweeps();
-    display_data(u_filt);
-    correlate_fields_ts1();
+    display_data(R11);
 
-    // Write fluctuations to a file.
-    string filename = "velocity_fluc_contour_plot.dat";
-    write_tecplot(filename);
+    // generate_white_noise();
+    // filtering_sweeps();
+    // display_data(u_filt);
+    // correlate_fields_ts1();
 
-    filename = "velocity_fluc_line_plot.dat";
-    write_tecplot_line(filename);
+    // // Write fluctuations to a file.
+    // string filename = "velocity_fluc_contour_plot.dat";
+    // write_tecplot(filename);
+
+    // filename = "velocity_fluc_line_plot.dat";
+    // write_tecplot_line(filename);
 }
 
 /**
@@ -889,6 +892,7 @@ void DIGITAL_FILTER::get_RST() {
     R22 = Vector(vel_file_N_values, 0.0);
     R33 = Vector(vel_file_N_values, 0.0);
 
+    // Set Reynolds stress terms
     for (int j = 0; j < vel_file_N_values; ++j) {
         R11[j] = u_rms[j] * u_rms[j];
         R21[j] = -uv_rms[j];

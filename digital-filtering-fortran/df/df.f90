@@ -3,7 +3,7 @@
 module DIGITAL_FILTERING
     implicit none
     private
-    public :: digital_filter_type, create_digital_filter
+    public :: digital_filter_type, create_digital_filter, test, filter
 
     INTEGER,PARAMETER :: dp = selected_real_kind(15)
     real(kind=dp), PARAMETER :: pi = acos(-1.0_dp)
@@ -47,7 +47,8 @@ module DIGITAL_FILTERING
 
 contains
 
-    ! Constructor subroutine
+    !   Constructor subroutine
+
     function create_digital_filter(d_i, rho_e, U_e, mu_e, grid_file, vel_fluc_file, vel_file_offset, vel_file_N_values) result(obj)
         implicit none
         real(kind=dp), intent(in) :: d_i, rho_e, U_e, mu_e
@@ -67,6 +68,8 @@ contains
 
         call read_grid(df)
         call rhoy_test(df)
+        call get_RST(df)
+        print *, "RST calculated"
 
         allocate(df%Iy(df%n_cells))
         allocate(df%Iz(df%n_cells))
@@ -92,9 +95,13 @@ contains
         allocate(df%rho_fluc(df%n_cells))
         allocate(df%T_fluc(df%n_cells))
 
-        call display_data(df%y)
+     
+        call calculate_filter_properties(df)
         obj = df
     end function create_digital_filter
+
+
+    !   This subroutine displays the array that is input. Used for bug checking.
 
     subroutine display_data(array)
             implicit none
@@ -107,10 +114,9 @@ contains
     end subroutine display_data
 
 
-
-!   Somehow, this function reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
-!   I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
-!   dy, dz and intgeres Nz, Ny populated with the data from the file. 
+    !   Somehow, this subroutine reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
+    !   I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
+    !   dy, dz and intgeres Nz, Ny populated with the data from the file. 
  
     subroutine read_grid(df)
         implicit none
@@ -119,7 +125,7 @@ contains
         integer :: j, k, idx
 
         ! set sizes
-        df%Nz = 450
+        df%Nz = 80
         df%Ny = df%vel_file_N_values
         df%n_cells = df%Nz * df%Ny
 
@@ -157,7 +163,8 @@ contains
         end do
     end subroutine read_grid
 
-!   This function is used to test the rho_y vector.
+
+    !   This subroutine is used to test the rho_y vector.
 
     subroutine rhoy_test(df)
         implicit none
@@ -171,320 +178,970 @@ contains
         end do
     end subroutine rhoy_test
 
- !  This function generates white noise for the filtering. It uses the PCG random number generator 
- !  to generate normally distributed random numbers.
 
-    ! subroutine generate_white_noise(df)
-    !     use, intrinsic :: iso_fortran_env, only: dp => real64
-    !     implicit none
-    !     type(digital_filter_type), intent(inout) :: df
+    !   This subroutine generates white noise for the filtering. It uses the PCG random number generator 
+    !   to generate normally distributed random numbers.
+
+    subroutine generate_white_noise(df)
+        use, intrinsic :: iso_fortran_env, only: dp => real64
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+
+        call fill_with_noise(df%ru_ys)
+        call fill_with_noise(df%ru_zs)
+        call fill_with_noise(df%rv_ys)
+        call fill_with_noise(df%rv_zs)
+        call fill_with_noise(df%rw_ys)
+        call fill_with_noise(df%rw_zs)
  
-    !     contains
-    !         subroutine fill_with_noise(vec)
-    !             real(kind=dp), intent(inout) :: vec(:)
-    !             integer :: j
-    !             real(kind=dp) :: u1, u2, r, theta, z1, z2
+        contains
+            subroutine fill_with_noise(vec)
+                real(kind=dp), intent(inout) :: vec(:)
+                integer :: j
+                real(kind=dp) :: u1, u2, r, theta, z1, z2
 
-    !             j = 1
-    !             do while (j <= size(vec))
-    !                 call random_number(u1)
-    !                 call random_number(u2)
-    !                 if (u1 == 0.0_dp) u1 = 1.0e-12_dp 
+                j = 1
+                do while (j <= size(vec))
+                    call random_number(u1)
+                    call random_number(u2)
+                    if (u1 == 0.0_dp) u1 = 1.0e-12_dp 
 
-    !                 r = sqrt(-2.0_dp * log(u1))
-    !                 theta = 2.0_dp * acos(-1.0_dp) * u2
-    !                 z1 = r * cos(theta)
-    !                 z2 = r * sin(theta)
+                    r = sqrt(-2.0_dp * log(u1))
+                    theta = 2.0_dp * acos(-1.0_dp) * u2
+                    z1 = r * cos(theta)
+                    z2 = r * sin(theta)
 
-    !                 vec(j) = z1
-    !                 if (j + 1 <= size(vec)) vec(j + 1) = z2
-    !                 j = j + 2
-    !             end do
-    !         end subroutine fill_with_noise
+                    vec(j) = z1
+                    if (j + 1 <= size(vec)) vec(j + 1) = z2
+                    j = j + 2
+                end do
+            end subroutine fill_with_noise
 
-    !     call fill_with_noise(df%ru_ys)
-    !     call fill_with_noise(df%ru_zs)
-    !     call fill_with_noise(df%rv_ys)
-    !     call fill_with_noise(df%rv_zs)
-    !     call fill_with_noise(df%rw_ys)
-    !     call fill_with_noise(df%rw_zs)
-
-    ! end subroutine generate_white_noise
+    end subroutine generate_white_noise
     
-    ! subroutine calculate_filter_properties(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    !     implicit none
 
-    !     integer Ny_max, Nz_max, i, j, k, idx, N_idx, kk, offset, depth, n_val
-    !     real(kind=dp) n_int, sum, val
+    !   This subroutine uses prescribed integral length scales Iz and Iy to find the filter width
+    !   for each cell as well as calculating the convolution coefficients and create the storage for 
+    !   white noise vectors. It is only called in the constructor and is not called again.
 
+    subroutine calculate_filter_properties(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+    
 
-    !     !=============================================================================================
-    !     ! Find filter half-width and convolution coefficients for u' when filtering in the z-direction
-    !     !=============================================================================================
-
-    !     ! Define integral length scales
-    !     real(kind=dp) Iz_out = 0.4_dp * df%d_i
-    !     real(kind=dp) Iz_inn = 150_dp * df%d_v
-
-    !     ! Holdering for maximum filter widths. Used for creating ghost cells.
-    !     Ny_max = 0, Nz_max = 0 
-
-    !     ! Loop to find integral length scales per cell and get half-widths. 
-    !     do j = 1, Ny
-    !         do k = 1, Nz
-
-    !             idx = (j - 1) * Nz + k
-    !             df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
-
-    !             n_int = max(1.0_dp, df%Iz(idx) / df%dx(idx))
-    !             n_val = 2 * int(n_int);
-    !             df%Nu_zs(idx) = n_val
-
-    !             if (n_val > Nz_max) Nz_max = n_val
-
-    !         end do  
-    !     end do
-
-    !     ! Allocate space for random data and filter coefficient arrays
-    !     N_holder(1) = Nz_max
-    !     depth = 2 * Nz_max + 1
-    !     allocate(df%ru_zs(df%Nz + 2 * Nz_max) * df%Ny) 
-    !     allocate(df%bu_z(depth * df%n_cells))              
-
-    !     ! This loop calculates the vector of filter coefficients for each cell (i,j).
-    !     do j = 1, Ny
-    !         do k = 1, Nz
-
-    !             idx = j * df%Nz + k     ! Cell index
-    !             N_idx = idx * depth     ! Starting index for b_vector of cell (i,j)
-
-    !             sum = 0.0_dp
-    !             ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-    !             do i = 1, 2 * df%Nu_zs(idx) + 1
-    !                 kk = i - df%Nu_za(idx)          ! Offset i-value since sum is from -N to N.
-    !                 val = exp(-2.0_dp * pi * abs(kk) / df%Nu_zs(idx))
-    !                 sum = sum + val * val
-    !             end do
-    !             sum = sqrt(sum)
-
-    !             ! Loop through and calculate final vector of filter coefficients.
-    !             do i = 1, 2 * df%Nu_zs(idx) + 1
-
-    !              ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
-    !              ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
-    !              ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
-    !              offset = N_idx + Nz_max
-    !              kk = i - df%Nu_zs(idx)
-    !              df%bu_z(offset + kk) = exp(-2.0_dp * pi * abs(kk) / df%Nu_zs(idx)) / sum
-    !             end do
-    !         end do
-    !     end do
+        integer Ny_max, Nz_max, i, j, k, idx, N_idx, kk, offset, depth, n_val
+        real(kind=dp) n_int, sum, val, Iz_out, Iz_inn
 
 
-    !     !=============================================================================================
-    !     ! Find filter half-width and convolution coefficients for u' when filtering in the y-direction
-    !     !=============================================================================================
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for u' when filtering in the z-direction
+        !=============================================================================================
 
-    !     ! Loop to find integral length scales per cell and get half-widths. 
-    !     do j = 1, Ny
-    !         for k = 1, Nz
-    !             idx = (j - 1) * Nz + k
-    !             df%Iy(idx) = 0.67_dp * df%Iz(idx)
-    !             n_int = max(1.0_dp, df%(Iy(idx)) / df%dy(idx))
-    !             df%Nu_ys(idx) = 2 * int(n_int)
-    !             if (n_int > Ny_max) Ny_max = 2 * int(n_int)
-    !         end do
-    !     end do
+        ! Define integral length scales
+        Iz_out = 0.4_dp * df%d_i
+        Iz_inn = 150.0_dp * df%d_v
 
-    !     ! Allocate space for random data and filter coefficient arrays.
-    !     df%N_holder(2) = Ny_max
-    !     allocate(df%ru_ys(df%Nz * (2 * Ny_max + df%Ny)))
-    !     allocate(df%bu_y)(2 * Ny_max + 1)
+        ! Holdering for maximum filter widths. Used for creating ghost cells.
+        Ny_max = 0
+        Nz_max = 0 
 
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
 
-    !     ! Loop that calculates sum square of filter coefficients
-    !     sum = 0.0_dp
-    !     do i = 1, 2 * Ny_max + 1
-    !         kk = i - Ny_max
-    !         val = exp(-2.0_dp * pi * abs(kk) / Ny_max)
-    !         sum = sum + val * val
-    !     end do
-    !     sum = sqrt(sum)
+                idx = (j - 1) * df%Nz + k
+                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
 
-    !     ! Loop that calculates individual filter coefficients
-    !     do i = 1, 2 * Ny_max + 1
-    !         kk = i - Ny_max
-    !         df%bu_y(i) = exp(-2.0_dp * pi * abs(kk) / Ny_max) / sum
-    !     end do  
+                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
+                n_val = 2 * int(n_int);
+                df%Nu_zs(idx) = n_val
 
-    !     !=============================================================================================
-    !     ! Find filter half-width and convolution coefficients for v' when filtering in the z-direction
-    !     !=============================================================================================
+                if (n_val > Nz_max) Nz_max = n_val
 
-    !     ! Reset max filter widths to 0
-    !     Nz_max = 0
-    !     Ny_max = 0
+            end do  
+        end do
 
-    !     ! Define integral length scales
-    !     Iz_out = 0.3_dp * df%d_i
-    !     Iz_inn = 75.0_dp * df%d_v
+        ! Allocate space for random data and filter coefficient arrays.
+        df%N_holder(1) = Nz_max
+        depth = 2 * Nz_max + 1
+        allocate(df%ru_zs((df%Nz + 2 * Nz_max) * df%Ny))
+        allocate(df%bu_z(depth * df%n_cells))              
 
-    !     ! Loop that calculates integral length scales per cell and filter half-widths
-    !     do j = 1, df%Ny
-    !         do k = 1, df%Nz
-    !             idx = (j - 1) * df%Nz + k 
-    !             df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
-    !             n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
-    !             df%Nv_zs(idx) = 2 * int(n_int)
-    !             if (n_int > Nz_max) Nz_max = 2 * int(n_int)
-    !         end do  
-    !     end do
+        ! This loop calculates the vector of filter coefficients for each cell (i,j).
+        do j = 1, df%Ny
+            do k = 1, df%Nz
 
-    !     ! Allocate space for random data and filter coefficient arrays
-    !     df%N_holder(3) = Nz_max
-    !     allocate(df%rv_zs(df%Nz + 2 * Nz_max) * df%Ny)
-    !     allocate(df%bv_z(2 * Nz_max + 1))
+                idx = (j - 1) * df%Nz + k       ! Cell index
+                N_idx = (idx - 1) * depth + 1   ! Starting index for b_vector of cell (i,j)
 
-    !     ! Loop that calculates sum square of filter coefficients
-    !     sum = 0.0_dp
-    !     do i = 1, 2 * Nz_max + 1
-    !         kk = i - Nz_max
-    !         val = exp(-2.0_dp * abs(kk) / Nz_max)
-    !         sum = sum + val *  val
-    !     end do
-    !     sum = sqrt(sum)
+                sum = 0.0_dp
+                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
+                do i = 1, 2 * df%Nu_zs(idx) + 1
+                    kk = (i - 1) - df%Nu_zs(idx)          ! Offset i-value since sum is from -N to N.
+                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_zs(idx), dp))
+                    sum = sum + val * val
+                end do
+                sum = sqrt(sum)
 
-    !     ! Loop that calculates individual filter coefficients
-    !     do i = 1, 2 * Nz_max + 1
-    !         kk = i - Nz_max
-    !         df%bv_z(i) = exp(-2.0_dp * pi * abs(kk) / Nz_max) / sum
-    !     end do
+                ! Loop through and calculate final vector of filter coefficients.
+                do i = 1, 2 * df%Nu_zs(idx) + 1
 
-    !     !=============================================================================================
-    !     ! Find filter half-width and convolution coefficients for v' when filtering in the y-direction
-    !     !=============================================================================================
-
-    !     ! Loop to find integral length scales per cell and get half-widths. 
-    !     do j = 1, df%Ny
-    !         do k = 1, df%Nz
-    !             idx = (j - 1) * df%Nz + k
-    !             df%Iy(idx) = 0.67 * df%Iz(idx)
-    !             n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
-    !             df%Nv_ys(idx) = 2 * int(n_int)
-    !             if (n_int > Ny_max) Ny_max = 2 * int(n_int)
-    !         end do
-    !     end do
-
-    !     ! Allocate space for random data and filter coefficient arrays
-    !     df%N_holder(4) = Ny_max
-    !     allocate(df%rv_ys(df%Nz * (2 * Ny_max + df%Ny)))
-    !     allocate(df%bv_y(2 * Ny_max + 1))
-
-    !     ! Loop that calculates sum square of filter coefficients
-    !     sum = 0.0_dp
-    !     do i = 0, 2 * Ny_max + 1
-    !         kk = i - Ny_max
-    !         val = exp(2.0_dp * abs(kk) / Ny_max)
-    !         sum = sum + val * val
-    !     end do
-    !     sum = sqrt(sum)
-
-    !     ! Loop that calculates individual filter coefficients
-    !     do i = 0, 2 * Ny_max + 1
-    !         kk = i - Ny_max
-    !         df%bv_y(i) = exp(-2.0_dp * abs(kk) / Ny_max) / sum
-    !     end do
-
-    !     !=============================================================================================
-    !     ! Find filter half-width and convolution coefficients for w' when filtering in the z-direction
-    !     !=============================================================================================
-
-    !     ! Reset max filter widths to 0
-    !     Nz_max = 0
-    !     Ny_max = 0
-
-    !     ! Define integral length scales
-    !     Iz_out = 0.4_dp * df%d_i
-    !     Iz_inn = 150.0_dp * df%d_v
-
-    !     ! Loop that calculates integral length scales per cell and filter half-widths
-    !     do j = 1, df%Ny
-    !         do k = 1, df%Nz
-    !             idx = (j - 1) * df%Nz + k
-    !             df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03-dp))
-    !             n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
-    !             df%Nw_zs(idx) = 2 * int(n_int)
-    !             if (n_int > Nz_max) Nz_max = 2 * int(n_int)
-    !         end do  
-    !     end do
-
-    !     ! Allocate space for random data and filter coefficient arrays
-    !     df%N_holder(5) = Nz_max
-    !     allocate(df%rw_zs((df%Nz + 2 * Nz_max) * df%Ny))
-    !     allocate(df%bw_z(2 * Nz_max + 1))
-
-    !     ! Loop that calculates sum square of filter coefficients   
-    !     sum = 0.0
-    !     do i = 1, 2 * Nz_max + 1
-    !         kk = i - Nz_max
-    !         val = exp(-2.0_dp * pi * abs(kk) / Nz_max)
-    !         sum = sum + val * val
-    !     end do
-    !     sum = sqrt(sum)
-            
-    !     ! Loop that calculates individual filter coefficients
-    !     do i = 0, 2 * Nz_max + 1
-    !         kk = i - Nz_max
-    !         df%bw_z(i) = exp(-2.0_dp * pi * abs(kk) / Nz_max) / sum
-    !     end do  
+                 ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
+                 ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
+                 ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
+                 offset = N_idx + Nz_max
+                 kk = (i - 1) - df%Nu_zs(idx)
+                 df%bu_z(offset + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_zs(idx), dp)) / sum
+                end do
+            end do
+        end do
 
 
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for u' when filtering in the y-direction
+        !=============================================================================================
+
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+
+                df%Iy(idx) = 0.67_dp * df%Iz(idx)
+                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
+                n_val = 2 * int(n_int)
+
+                df%Nu_ys(idx) = n_val
+                if (n_val > Ny_max) Ny_max = n_val
+            end do
+        end do
+
+        ! Allocate space for random data and filter coefficient arrays.
+        df%N_holder(2) = Ny_max
+        depth = 2 * Ny_max + 1
+        allocate(df%ru_ys(df%Nz * (2 * Ny_max + df%Ny)))
+        allocate(df%bu_y(depth * df%n_cells))
 
 
-                    
+        ! This loop calculates the vector of filter coefficients for each cell (i,j).
+        do j = 1, df%Ny
+            do k = 1, df% Nz
 
-    ! end subroutine
+                idx = (j - 1) * df%Nz + k       ! Cell index
+                N_idx = (idx - 1) * depth + 1   ! Starting index for b_vector of cell (i,j)
 
-    ! subroutine correlate_fields(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+                sum = 0.0_dp
 
-    ! subroutine correlate_fields_ts1(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
+                do i = 1, 2 * df%Nu_ys(idx) + 1
+                    kk = (i - 1) - df%Nu_ys(idx)
+                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_ys(idx), dp))
+                    sum = sum + val * val
+                end do
+                sum = sqrt(sum)
 
-    ! subroutine filtering_sweeps(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+                ! Loop through and calculate final vector of filter coefficients.
+                do i = 1, 2 * df%Nu_ys(idx) + 1
+                    offset = N_idx + Ny_max
+                    kk = (i - 1) - df%Nu_ys(idx)
+                    df%bu_y(offset + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_ys(idx), dp)) / sum
+                end do
+            end do
+        end do
 
-    ! subroutine filter(df, dt_input)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for v' when filtering in the z-direction
+        !=============================================================================================
 
-    ! subroutine get_rho_T_fluc(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+        ! Define integral length scales
+        Iz_out = 0.3_dp * df%d_i
+        Iz_inn = 75.0_dp * df%d_v
 
-    ! subroutine set_old(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+        ! Holdering for maximum filter widths. Used for creating ghost cells.
+        Ny_max = 0
+        Nz_max = 0 
 
-    ! subroutine test(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
 
-    ! subroutine find_mean_variance(df, v)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+                idx = (j - 1) * df%Nz + k
+                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
 
-    ! subroutine get_RST(df)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
+                n_val = 2 * int(n_int);
+                df%Nv_zs(idx) = n_val
 
-    ! subroutine write_tecplot(df, filename)
-    !     type(digital_filter_type), intent(inout) :: df
-    ! end subroutine
+                if (n_val > Nz_max) Nz_max = n_val
+
+            end do  
+        end do
+
+        ! Allocate space for random data and filter coefficient arrays.
+        df%N_holder(3) = Nz_max
+        depth = 2 * Nz_max + 1
+        allocate(df%rv_zs((df%Nz + 2 * Nz_max) * df%Ny))
+        allocate(df%bv_z(depth * df%n_cells))              
+
+        ! This loop calculates the vector of filter coefficients for each cell (i,j).
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k       ! Cell index
+                N_idx = (idx - 1) * depth + 1   ! Starting index for b_vector of cell (i,j)
+
+                sum = 0.0_dp
+                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
+                do i = 1, 2 * df%Nv_zs(idx) + 1
+                    kk = (i - 1) - df%Nv_zs(idx)          ! Offset i-value since sum is from -N to N.
+                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_zs(idx), dp))
+                    sum = sum + val * val
+                end do
+                sum = sqrt(sum)
+
+                ! Loop through and calculate final vector of filter coefficients.
+                do i = 1, 2 * df%Nv_zs(idx) + 1
+
+                 ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
+                 ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
+                 ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
+                 offset = N_idx + Nz_max
+                 kk = (i - 1) - df%Nv_zs(idx)
+                 df%bv_z(offset + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_zs(idx), dp)) / sum
+                end do
+            end do
+        end do
+
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for v' when filtering in the y-direction
+        !=============================================================================================
+
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+
+                df%Iy(idx) = 0.67_dp * df%Iz(idx)
+                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
+                n_val = 2 * int(n_int)
+
+                df%Nv_ys(idx) = n_val
+                if (n_val > Ny_max) Ny_max = n_val
+            end do
+        end do
+
+        ! Allocate space for random data and filter coefficient arrays.
+        df%N_holder(4) = Ny_max
+        depth = 2 * Ny_max + 1
+        allocate(df%rv_ys(df%Nz * (2 * Ny_max + df%Ny)))
+        allocate(df%bv_y(depth * df%n_cells))
+
+
+        ! This loop calculates the vector of filter coefficients for each cell (i,j).
+        do j = 1, df%Ny
+            do k = 1, df% Nz
+
+                idx = (j - 1) * df%Nz + k       ! Cell index
+                N_idx = (idx - 1) * depth + 1   ! Starting index for b_vector of cell (i,j)
+
+                sum = 0.0_dp
+
+                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
+                do i = 1, 2 * df%Nv_ys(idx) + 1
+                    kk = (i - 1) - df%Nv_ys(idx)
+                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_ys(idx), dp))
+                    sum = sum + val * val
+                end do
+                sum = sqrt(sum)
+
+                ! Loop through and calculate final vector of filter coefficients.
+                do i = 1, 2 * df%Nv_ys(idx) + 1
+                    offset = N_idx + Ny_max
+                    kk = (i - 1) - df%Nv_ys(idx)
+                    df%bv_y(offset + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_ys(idx), dp)) / sum
+                end do
+            end do
+        end do
+
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for w' when filtering in the z-direction
+        !=============================================================================================
+
+        ! Define integral length scales
+        Iz_out = 0.4_dp * df%d_i
+        Iz_inn = 150.0_dp * df%d_v
+
+        ! Holdering for maximum filter widths. Used for creating ghost cells.
+        Ny_max = 0
+        Nz_max = 0 
+
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
+
+                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
+                n_val = 2 * int(n_int);
+                df%Nw_zs(idx) = n_val
+
+                if (n_val > Nz_max) Nz_max = n_val
+
+            end do  
+        end do
+
+        ! Allocate space for random data and filter coefficient arrays.
+        df%N_holder(5) = Nz_max
+        depth = 2 * Nz_max + 1
+        allocate(df%rw_zs((df%Nz + 2 * Nz_max) * df%Ny))
+        allocate(df%bw_z(depth * df%n_cells))              
+
+        ! This loop calculates the vector of filter coefficients for each cell (i,j).
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k       ! Cell index
+                N_idx = (idx - 1) * depth + 1   ! Starting index for b_vector of cell (i,j)
+
+                sum = 0.0_dp
+                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
+                do i = 1, 2 * df%Nw_zs(idx) + 1
+                    kk = (i - 1) - df%Nw_zs(idx)          ! Offset i-value since sum is from -N to N.
+                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_zs(idx), dp))
+                    sum = sum + val * val
+                end do
+                sum = sqrt(sum)
+
+                ! Loop through and calculate final vector of filter coefficients.
+                do i = 1, 2 * df%Nw_zs(idx) + 1
+
+                 ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
+                 ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
+                 ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
+                 offset = N_idx + Nz_max
+                 kk = (i - 1) - df%Nw_zs(idx)
+                 df%bw_z(offset + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_zs(idx), dp)) / sum
+                end do
+            end do
+        end do
+
+
+
+        !=============================================================================================
+        ! Find filter half-width and convolution coefficients for w' when filtering in the y-direction
+        !=============================================================================================
+
+        ! Loop to find integral length scales per cell and get half-widths. 
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+
+                df%Iy(idx) = 0.67_dp * df%Iz(idx)
+                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
+                n_val = 2 * int(n_int)
+
+                df%Nw_ys(idx) = n_val
+                if (n_val > Ny_max) Ny_max = n_val
+            end do
+        end do
+
+        ! Allocate space for random data and filter coefficient arrays.
+        df%N_holder(6) = Ny_max
+        depth = 2 * Ny_max + 1
+        allocate(df%rw_ys(df%Nz * (2 * Ny_max + df%Ny)))
+        allocate(df%bw_y(depth * df%n_cells))
+
+
+        ! This loop calculates the vector of filter coefficients for each cell (i,j).
+        do j = 1, df%Ny
+            do k = 1, df% Nz
+
+                idx = (j - 1) * df%Nz + k       ! Cell index
+                N_idx = (idx - 1) * depth + 1   ! Starting index for b_vector of cell (i,j)
+
+                sum = 0.0_dp
+
+                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
+                do i = 1, 2 * df%Nw_ys(idx) + 1
+                    kk = (i - 1) - df%Nw_ys(idx)
+                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_ys(idx), dp))
+                    sum = sum + val * val
+                end do
+                sum = sqrt(sum)
+
+                ! Loop through and calculate final vector of filter coefficients.
+                do i = 1, 2 * df%Nw_ys(idx) + 1
+                    offset = N_idx + Ny_max
+                    kk = (i - 1) - df%Nw_ys(idx)
+                    df%bw_y(offset + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_ys(idx), dp)) / sum
+                end do
+            end do
+        end do
+       
+    end subroutine calculate_filter_properties
+
+
+    !  This scales the fluctuations by the Reynolds stress tensor R_ij. It is only for the first time step 
+    !  so it doesnt correlate the old fluctuations with the new ones. 
+
+    subroutine correlate_fields_ts1(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        real(kind=dp) b
+        integer :: k, j, idx
+
+        do j = 1, df%Ny
+
+            if (df%R11(j) < 1e-10) then
+                b = 0.0
+            else
+                b = df%R21(j) / sqrt(df%R11(j))
+            end if
+
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+
+                df%u_fluc(idx) = sqrt(df%R11(j)) * df%u_filt(idx)
+                df%v_fluc(idx) = b * df%u_filt(idx) + sqrt(df%R22(j) - b**2) * df%v_filt(idx)
+                df%w_fluc(idx) = sqrt(df%R33(j)) * df%w_filt(idx)
+            end do
+        end do
+        
+        call set_old(df)
+    end subroutine correlate_fields_ts1
+
+
+    !  This scales the fluctuations by the Reynolds stress tensor R_ij. It then correclates the old fields 
+    !  with the new ones by using an integral length/time scale.
+
+    subroutine correlate_fields(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        real(kind=dp) b, Ix, lt
+        integer :: j, k, idx
+
+        ! Timestep correlation for u'
+        Ix = 0.8_dp * df%d_i
+        lt = Ix / df%U_e
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+                df%u_filt(idx) = df%u_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) + df%u_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
+            end do
+        end do
+
+
+        ! Timestep correlation for v'
+        Ix = 0.3_dp * df%d_i
+        lt = Ix / df%U_e
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+                df%v_filt(idx) = df%v_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) + df%v_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
+            end do
+        end do
+
+
+        ! Timestep correlation for w'
+        Ix = 0.8_dp * df%d_i
+        lt = Ix / df%U_e
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                idx = (j - 1) * df%Nz + k
+                df%w_filt(idx) = df%w_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) + df%w_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
+            end do
+        end do
+
+
+        ! Scale by Reynolds stress tensor
+        do j = 1, df%Ny
+
+            if (df%R11(j) < 1e-10) then
+                b = 0.0
+            else
+                b = df%R21(j) / sqrt(df%R11(j))
+            end if
+
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+
+                df%u_fluc(idx) = sqrt(df%R11(j)) * df%u_filt(idx)
+                df%v_fluc(idx) = b * df%u_filt(idx) + sqrt(df%R22(j) - b**2) * df%v_filt(idx)
+                df%w_fluc(idx) = sqrt(df%R33(j)) * df%w_filt(idx)
+            end do
+        end do
+        
+        call set_old(df)
+
+    end subroutine correlate_fields
+
+    !  This functions filters the random data in y and z seeps using the filter coefficients and filter widths 
+    !  previously calculated. The filtering is done in two sweeps, first in y and then in z direction.
+
+    subroutine filtering_sweeps(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        integer :: r_idy, r_idz, idx, N_idx, offset, kk, Ny_pad, Nz_pad, i, j, k
+        real(kind=dp) :: sum
+
+        ! ========================================
+        ! ------: Filter u' in y-direction :------
+        ! ========================================
+        
+        Nz_pad = df%N_holder(1)
+        Ny_pad = df%N_holder(2)
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                r_idy = ((j - 1) + Ny_pad) * df%Nz + k
+                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
+                idx = (j - 1) * df%Nz + k
+                N_idx = (idx - 1) * (2 * Ny_pad + 1) + 1
+
+                sum = 0.0
+                do i = 1, 2 * df%Nu_ys(idx) + 1
+                    kk = (i - 1) - df%Nu_ys(idx)
+                    offset = N_idx + Ny_pad
+                    sum = sum + df%bu_y(offset + kk) * df%ru_ys(r_idy + kk * df%Nz)
+                end do
+
+                df%ru_zs(r_idz) = sum
+
+            end do
+        end do
+
+
+        ! ========================================
+        ! ------: Filter u' in z-direction :------
+        ! ========================================
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
+                idx = (j - 1) * df%Nz + k
+                N_idx = (idx - 1) * (2 * Nz_pad + 1) + 1
+
+                sum = 0.0
+                do i = 1, 2 * df%Nu_zs(idx) + 1
+                    kk = (i - 1) - df%Nu_zs(idx)
+                    offset = N_idx + Nz_pad
+                    sum = sum + df%bu_z(offset + kk) * df%ru_zs(r_idz + kk)
+                end do
+
+                df%u_filt(idx) = sum
+
+            end do
+        end do
+
+
+        ! ========================================
+        ! ------: Filter v' in y-direction :------
+        ! ========================================
+        
+        Nz_pad = df%N_holder(3)
+        Ny_pad = df%N_holder(4)
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                r_idy = ((j - 1) + Ny_pad) * df%Nz + k
+                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
+                idx = (j - 1) * df%Nz + k
+                N_idx = (idx - 1) * (2 * Ny_pad + 1) + 1
+
+                sum = 0.0
+                do i = 1, 2 * df%Nv_ys(idx) + 1
+                    kk = (i - 1) - df%Nv_ys(idx)
+                    offset = N_idx + Ny_pad
+                    sum = sum + df%bv_y(offset + kk) * df%rv_ys(r_idy + kk * df%Nz)
+                end do
+
+                df%rv_zs(r_idz) = sum
+
+            end do
+        end do
+        
+
+        ! ========================================
+        ! ------: Filter v' in z-direction :------
+        ! ========================================
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
+                idx = (j - 1) * df%Nz + k
+                N_idx = (idx - 1) * (2 * Nz_pad + 1) + 1
+
+                sum = 0.0
+                do i = 1, 2 * df%Nv_zs(idx) + 1
+                    kk = (i - 1) - df%Nv_zs(idx)
+                    offset = N_idx + Nz_pad
+                    sum = sum + df%bv_z(offset + kk) * df%rv_zs(r_idz + kk)
+                end do
+
+                df%v_filt(idx) = sum
+
+            end do
+        end do
+
+
+        ! ========================================
+        ! ------: Filter w' in y-direction :------
+        ! ========================================
+        
+        Nz_pad = df%N_holder(5)
+        Ny_pad = df%N_holder(6)
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                r_idy = ((j - 1) + Ny_pad) * df%Nz + k
+                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
+                idx = (j - 1) * df%Nz + k
+                N_idx = (idx - 1) * (2 * Ny_pad + 1) + 1
+
+                sum = 0.0
+                do i = 1, 2 * df%Nw_ys(idx) + 1
+                    kk = (i - 1) - df%Nw_ys(idx)
+                    offset = N_idx + Ny_pad
+                    sum = sum + df%bw_y(offset + kk) * df%rw_ys(r_idy + kk * df%Nz)
+                end do
+
+                df%rw_zs(r_idz) = sum
+
+            end do
+        end do
+
+        ! ========================================
+        ! ------: Filter w' in z-direction :------
+        ! ========================================
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+
+                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
+                idx = (j - 1) * df%Nz + k
+                N_idx = (idx - 1) * (2 * Nz_pad + 1) + 1
+
+                sum = 0.0
+                do i = 1, 2 * df%Nw_zs(idx) + 1
+                    kk = (i - 1) - df%Nw_zs(idx)
+                    offset = N_idx + Nz_pad
+                    sum = sum + df%bw_z(offset + kk) * df%rw_zs(r_idz + kk)
+                end do
+
+                df%w_filt(idx) = sum
+
+            end do
+        end do
+
+    end subroutine filtering_sweeps
+
+
+    !  This runs all the filtering processes and updates the fluctuations. This is the only function that should 
+    !  be called from the main program after initializing the DIGITAL_FILTER object. It generates white noise, filters 
+    !  the velocity fluctuations in y and z sweeps, and correlates the fields. @param dt_input is the time step size 
+    !  from the CFD simulation.
+
+    subroutine filter(df, dt_input)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        real(kind=dp), intent(in) :: dt_input
+        df%dt = dt_input
+
+        call generate_white_noise(df)
+        call filtering_sweeps(df)
+        call correlate_fields(df)
+
+    end subroutine filter
+
+
+    !  This function uses the Strong Reynolds Analogy to find fluctuations for temperature and density assuming 
+    !  pressure is constant in the boundary layer. It currently assumes constant gamma = 1.4
+
+    subroutine get_rho_T_fluc(df)
+        type(digital_filter_type), intent(inout) :: df
+        real(kind=dp) :: val
+        integer :: j, k, idx
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+                val = (-1.4_dp - 1.0_dp) * df%My(j)**2 * df%Uy(j) * df%u_fluc(idx)
+                df%T_fluc(idx) = val
+                df%rho_fluc(idx) = -val / df%Ty(j) * df%rhoy(j)
+            end do
+        end do
+        
+    end subroutine get_rho_T_fluc
+
+    !   This sets old fluctuations to new ones. 
+    subroutine set_old(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        integer :: j, k, idx
+
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+
+                df%u_filt_old(idx) = df%u_filt(idx)
+                df%v_filt_old(idx) = df%v_filt(idx)
+                df%w_filt_old(idx) = df%w_filt(idx)
+            end do  
+        end do
+
+    end subroutine set_old
+
+    subroutine test(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+
+        call generate_white_noise(df)
+        call filtering_sweeps(df)
+        call correlate_fields_ts1(df)
+        call write_csv(df)    
+    end subroutine test
+
+    subroutine find_mean_variance(df, v)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+
+        real(kind=dp), intent(in) :: v(df%n_cells)
+        integer i  
+        real(kind=dp) :: mean_sum, var_sum, mean, variance
+    
+        mean_sum = 0.0_dp
+        var_sum = 0.0_dp
+
+        do i = 1, df%n_cells
+            mean_sum = mean_sum + v(i)
+        end do
+
+        mean = mean_sum / real(df%n_cells, dp)
+
+        do i = 1, df%n_cells
+            var_sum = var_sum + (v(i) - mean)**2
+        end do
+        
+        variance = var_sum / real(df%n_cells, dp)
+
+        print *, "Mean:", mean, " Variance:", variance
+
+    end subroutine find_mean_variance
+
+    subroutine get_RST(df)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        integer :: i, j, count, ios
+        character(len=500) :: line
+        real(kind=dp), allocatable :: urms_us(:), vrms_us(:), wrms_us(:), uvrms_us(:), u_rms(:), v_rms(:), w_rms(:), uv_rms(:)
+        real(kind=dp) :: values(28)
+        real(kind=dp) :: val, x_est, Re, Cf, tau_w, u_tau, u_Mor
+
+        ! Allocate vectors for arrays
+        allocate(urms_us(df%vel_file_N_values))
+        allocate(vrms_us(df%vel_file_N_values))
+        allocate(wrms_us(df%vel_file_N_values))
+        allocate(uvrms_us(df%vel_file_N_values))
+        allocate(u_rms(df%vel_file_N_values))
+        allocate(v_rms(df%vel_file_N_values))
+        allocate(w_rms(df%vel_file_N_values))
+        allocate(uv_rms(df%vel_file_N_values))
+        allocate(df%R11(df%vel_file_N_values))
+        allocate(df%R21(df%vel_file_N_values))
+        allocate(df%R22(df%vel_file_N_values))
+        allocate(df%R33(df%vel_file_N_values))
+
+        open(unit = 10, file=df%vel_fluc_file, status='old', action='read', iostat=ios)
+        if (ios /= 0) then
+            print *, 'Error opening input file'
+            stop 
+        end if
+
+        ! Skip header lines
+        do i = 1, df%vel_file_offset
+            read(10, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+        end do
+
+        count = 1
+        
+        ! Read lines to gather data
+        do  
+            read(10, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+
+            if (len_trim(line) == 0) cycle
+
+            read(line, *, iostat=ios) (values(j), j = 1,28)
+            if (ios /= 0) cycle
+
+            if (count <= df%vel_file_N_values) then
+                urms_us(count) = values(9)
+                vrms_us(count) = values(11)
+                wrms_us(count) = values(10)
+                uvrms_us(count) = values(16)
+            end if
+            count = count + 1
+        end do
+
+        close(10)
+
+        ! Turbulent boundary layer estimates
+        Re = df%rho_e * df%U_e / df%mu_e
+        val = df%d_i / 0.37_dp * Re**(1.0_dp/5.0_dp)
+        x_est = val**(5.0_dp / 4.0_dp)
+        print *, "x_est ", x_est
+
+        Cf = 0.0576_dp / (Re * x_est)**(1.0_dp / 5.0_dp)
+        tau_w = 0.5_dp * Cf * df%rho_e * df%U_e**2
+        u_tau = sqrt(tau_w / df%rhoy(1))
+
+        print *, "Cf ", Cf
+        print *, "tau_w ", tau_w
+        print *, "u_tau ", u_tau
+
+        ! Scale u'_rms / u* to inflow u*
+        do i = 1, df%vel_file_N_values
+            u_Mor = sqrt(tau_w / df%rhoy(i))
+            u_rms(i) = urms_us(i) * u_Mor
+            v_rms(i) = vrms_us(i) * u_Mor
+            w_rms(i) = wrms_us(i) * u_Mor
+            uv_rms(i) = uvrms_us(i) * u_Mor**2
+        end do
+
+        ! Set Reynolds stress terms
+        do i = 1, df%vel_file_N_values
+            df%R11(i) = u_rms(i)**2
+            df%R21(i) = -uv_rms(i)
+            df%R22(i) = v_rms(i)**2
+            df%R33(i) = w_rms(i)**2
+        end do
+
+        df%d_v = 0.0002 * df%d_i    ! Will be changed
+        
+    end subroutine get_RST
+
+
+    !  This function writes the velocity fluctuations to a Tecplot file for visualization. It writes the z, y, u_fluc, 
+    !  v_fluc, and w_fluc data. @param filename is the name of the file to write to.
+
+    subroutine write_tecplot(df, filename)
+        implicit none
+        type(digital_filter_type), intent(inout) :: df
+        character(len=*), intent(in) :: filename
+        integer :: j, k, idx 
+        integer :: unit
+
+        inquire(iolength = unit)
+        unit = 20
+
+        open(unit=unit, file=filename, status='replace', action='write', iostat=idx)
+        if (idx /= 0) then
+            print *, 'Error opening file: ', filename
+            return
+        end if
+
+        write(unit, '(A)') 'VARIABLES = "z", "y", "u_fluc", "v_fluc", "w_fluc"'
+        write(unit, '(A,I0,A,I0,A)') 'ZONE T="Flow Field", I=', df%Nz + 1, ', J=', df%Ny + 1, ', F=BLOCK'
+        write(unit, '(A)') 'VARLOCATION=([3-5]=CELLCENTERED)'
+
+        ! Write z coordinates
+        do j = 1, df%Ny + 1
+            do k = 1, df%Nz + 1
+                idx = (j - 1) * (df%Nz + 1) + k
+                write(unit, '(F12.6)') df%z(idx)
+            end do
+        end do
+
+        ! Write y coordinates
+        do j = 1, df%Ny + 1
+            do k = 1, df%Nz + 1
+                idx = (j - 1) * (df%Nz + 1) + k
+                write(unit, '(F12.6)') df%y(idx)
+            end do
+        end do
+
+        ! Write u_fluc
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+                write(unit, '(F12.6)') df%u_fluc(idx)
+            end do
+        end do
+
+        ! Write v_fluc
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+                write(unit, '(F12.6)') df%v_fluc(idx)
+            end do
+        end do
+
+        ! Write w_fluc
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+                write(unit, '(F12.6)') df%w_fluc(idx)
+            end do
+        end do
+
+        close(unit)
+        print *, 'Finished plotting.'
+    end subroutine write_tecplot
+
+
+    subroutine write_csv(df)
+        implicit none
+        type(digital_filter_type), intent(in) :: df
+        character(len=50) :: filename
+        integer :: j, k, idx, iidx
+        integer :: unit
+
+        filename = "../files/velocity-fluctuations.csv"
+
+        ! Assign a free file unit
+        unit = 20
+
+        ! Open file for writing
+        open(unit=unit, file=filename, status='replace', action='write', iostat=idx)
+        if (idx /= 0) then
+            print *, 'Error opening file: ', filename
+            return
+        end if
+
+        ! Write CSV header
+        write(unit, '(A)') 'z, y, u_fluc, v_fluc, w_fluc'
+
+        ! Write data row by row
+        do j = 1, df%Ny
+            do k = 1, df%Nz
+                idx = (j - 1) * df%Nz + k
+                iidx = (j - 1) * (df%Nz + 1) + k
+                write(unit, '(F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6)') &
+                    df%z(iidx), df%y(iidx), df%u_fluc(idx), df%v_fluc(idx), df%w_fluc(idx)
+            end do
+        end do
+
+        close(unit)
+        print *, 'CSV file written to ', filename
+    end subroutine write_csv
+
 
 end module DIGITAL_FILTERING
 

@@ -1,0 +1,8 @@
+ x_est    3.2657055345283223E-002
+ Cf    6.1970798113495131E-003
+ tau_w    102.95544572320721     
+ u_tau    68.358660353718463     
+ RST calculated
+ Constructor completed.
+ CSV file written to ../files/velocity-fluctuations.csv                
+ Test completed

@@ -5,19 +5,19 @@ FFLAGS = -O2 -Wall -fimplicit-none
 # Directories
 DF_DIR = df
 TEST_DIR = test
-BUILD_DIR = build
-PROG_DIR = programs
+BUILD_DIR = ../build/fortran
+PROG_DIR = ../programs
 
 # Sources
 DF_SRC = $(DF_DIR)/df.f90
-MAIN_SRC = $(TEST_DIR)/main.f90
+MAIN_SRC = $(TEST_DIR)/fortran-main.f90
 
 # Objects
 DF_OBJ = $(BUILD_DIR)/df.o
 MAIN_OBJ = $(BUILD_DIR)/main.o
 
 # Executable
-EXE = $(PROG_DIR)/test.exe
+EXE = $(PROG_DIR)/fortran-test.exe
 
 # Default target
 all: $(EXE)
@@ -39,4 +39,4 @@ $(MAIN_OBJ): $(MAIN_SRC) $(DF_OBJ)
 
 # Clean
 clean:
-	rm -rf $(BUILD_DIR)/* $(PROG_DIR)/*
+	rm -f $(BUILD_DIR)/df.o $(BUILD_DIR)/main.o $(BUILD_DIR)/*.mod $(EXE)
