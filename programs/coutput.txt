@@ -1,0 +1,6 @@
+x_est = 0.032658
+C_f = 0.0061969
+tau_w = 33.6
+u_tau = 35.6753
+Calculated filter properties
+Finished plotting.

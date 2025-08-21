@@ -5,17 +5,19 @@ DIGITAL_FILTER::DIGITAL_FILTER(df_config config) {
 
     d_i = config.d_i;
     rho_e = config.rho_e;
-    U_e = config.rho_e;
+    U_e = config.U_e;
     mu_e = config.mu_e;
     grid_file = config.grid_file;
     vel_fluc_file = config.vel_fluc_file;
     vel_file_offset = config.vel_file_offset;
     vel_file_N_values = config.vel_file_N_values;
 
-
+    rms_counter = 0;
+   
     read_grid();        // Eventually this will be important. Currently it just makes up my own grid for testing.
     rho_y_test();       // This will be deleted after I can read in rhoy values and not make some up.  
     get_RST();          // Initializes the Reynold-stress tensor terms
+
 
     // Data structures.
     Iy = Vector(n_cells);
@@ -36,18 +38,33 @@ DIGITAL_FILTER::DIGITAL_FILTER(df_config config) {
     u_filt_old = Vector(n_cells);
     v_filt_old = Vector(n_cells);
     w_filt_old = Vector(n_cells);
+    buz_offsets = Vector(n_cells); 
+    buy_offsets = Vector(n_cells); 
+    bvz_offsets = Vector(n_cells); 
+    bvy_offsets = Vector(n_cells); 
+    bwz_offsets = Vector(n_cells); 
+    bwy_offsets = Vector(n_cells); 
+
     My = Vector(Ny);
     Uy = Vector(Ny);
     Ty = Vector(Ny);
     rho_fluc = Vector(n_cells);
     T_fluc = Vector(n_cells);
+    rms_added = Vector(n_cells, 0.0);
+    rms = Vector(n_cells, 0.0);
 
     calculate_filter_properties(); // Initialize coefficients and filter half-widths. 
+
+    cout << "Calculated filter properties" << endl;
     // First timestep filtering.
     generate_white_noise();
     filtering_sweeps();
     correlate_fields_ts1();
+    // string filename = "../files/cpp_vel_fluc_init.dat";
+    // write_tecplot(filename);
+
     // get_rho_T_fluc(); 
+
 
 }
 
@@ -58,7 +75,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(df_config config) {
 */
 void DIGITAL_FILTER::read_grid() {
 
-    Nz = 450;
+    Nz = 30;
     Ny = vel_file_N_values;
     n_cells = Nz * Ny;
 
@@ -75,9 +92,9 @@ void DIGITAL_FILTER::read_grid() {
      *  Is just a holder for y and z values since I cant read into grid yet. Needs to be replaced with real grid grabber. 
      */
 
-    double y_max = 0.01;
+    double y_max = 2 * d_i;
     double eta = 0.0;  
-    double a = 3.0; 
+    double a = 2.0; 
 
     for (int j = Ny; j >= 0; --j) {
         for (int k = 0; k < Nz + 1; ++k) {
@@ -105,7 +122,7 @@ void DIGITAL_FILTER::read_grid() {
 void DIGITAL_FILTER::rho_y_test() {
     rhoy = Vector(Ny, 0.0);
     for (int j = 0; j < Ny; ++j) {
-        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.5);
+        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.6);
     }
 }
 
@@ -143,7 +160,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     // Holders for maximum filter widths for creating ghost cells.
     double Ny_max = 0; Nz_max = 0;
     double n_int, sum, val; 
-    int idx, depth, N_idx, kk, offset, n_val;
+    int idx, kk, n_val, b_size = 0;
 
     //=============================================================================================
     // Find filter half-width and convolution coefficients for u' when filtering in the z-direction
@@ -163,7 +180,10 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             n_int = max(1.0, Iz[idx] / dz[idx]);  
             n_val = 2 * static_cast<int>(n_int);
-            Nu_zs[idx] = n_val;         
+            Nu_zs[idx] = n_val;      
+
+            b_size += 2 * n_val + 1;
+            buz_offsets[idx] = b_size - n_val;
 
             if (n_val > Nz_max) Nz_max =  n_val;
         }
@@ -171,17 +191,15 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     // Allocate space for random data and filter coefficient arrays
     N_holder[0] = Nz_max; 
-    depth = 2 * Nz_max + 1;    
     ru_zs = Vector( (Nz + 2 * Nz_max) * Ny);
-    bu_z = Vector(depth * n_cells); 
+    bu_z = Vector(b_size); 
 
     //This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
             idx = j * Nz + k;       // Cell index.
-            N_idx = idx * depth;    // Starting index for b_vector of cell (i,j).
-
+            
             sum = 0.0;
 
             // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
@@ -198,19 +216,20 @@ void DIGITAL_FILTER::calculate_filter_properties() {
                  *  Since filter width varies per cell, this index brings us to the actual start of the b vector 
                  *  for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
                  *  and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
-                 */
-                offset = N_idx + Nz_max;                 
+                 */                 
                 kk = i - Nu_zs[idx];    // Offset i-value since sum is from -N to N.
-                bu_z[offset + kk] = exp(pi_c * abs(kk) / Nu_zs[idx]) / sum; // Final filter coefficient for (i,j).
+                bu_z[buz_offsets[idx] + kk] = exp(pi_c * abs(kk) / Nu_zs[idx]) / sum; // Final filter coefficient for (i,j).
             }
         }
     }
+
 
 
     //=============================================================================================
     // Find filter half-width and convolution coefficients for u' when filtering in the y-direction
     //=============================================================================================
 
+    b_size =  0;
     // Loop to find integral length scales per cell and get half-widths. 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
@@ -221,23 +240,24 @@ void DIGITAL_FILTER::calculate_filter_properties() {
             n_int = max(1.0, Iy[idx] / dy[idx]); 
             n_val = 2 * static_cast<int>(n_int);
 
+            b_size += 2 * n_val + 1;
+            buy_offsets[idx] = b_size - n_val;
+
             Nu_ys[idx] = n_val;
             if (n_val > Ny_max) Ny_max = n_val;
         }
     }
 
     // Allocate space for random data and filter coefficient arrays.
-    N_holder[1] = Ny_max;
-    depth = 2 * Ny_max + 1;   
+    N_holder[1] = Ny_max; 
     ru_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
-    bu_y = Vector(depth * n_cells, 0.0);
+    bu_y = Vector(b_size, 0.0);
 
     //This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
             idx = j * Nz + k;       
-            N_idx = idx * depth;    
 
             sum = 0.0;
 
@@ -251,10 +271,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             // Loop through and calculate final vector of filter coefficients.
             for (int i = 0; i < 2 * Nu_ys[idx] + 1; ++i) {
-                
-                offset = N_idx + Ny_max;                 
+                                
                 kk = i - Nu_ys[idx];    
-                bu_y[offset + kk] = exp(pi_c * abs(kk) / Nu_ys[idx]) / sum; 
+                bu_y[buy_offsets[idx] + kk] = exp(pi_c * abs(kk) / Nu_ys[idx]) / sum; 
             }
         }
     }
@@ -265,6 +284,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     // Reset max values for filter widths.
     Nz_max = 0, Ny_max = 0;
+    b_size = 0;
 
     // Define integral length scales
     Iz_out = 0.3 * d_i;
@@ -279,7 +299,10 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             n_int = max(1.0, Iz[idx] / dz[idx]);  
             n_val = 2 * static_cast<int>(n_int);                                               
-            Nv_zs[idx] = n_val;                                                     
+            Nv_zs[idx] = n_val;
+            
+            b_size += 2 * n_val + 1;
+            bvz_offsets[idx] = b_size - n_val;
             
             if (n_val > Nz_max) Nz_max = n_val;                                           
         }
@@ -288,15 +311,13 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     // Allocate space for random data and filter coefficient arrays.
     N_holder[2] = Nz_max; 
     rv_zs = Vector( (Nz + 2 * Nz_max) * Ny, 0.0);  
-    depth = 2 * Nz_max + 1;
-    bv_z = Vector(depth * n_cells, 0.0);
+    bv_z = Vector(b_size, 0.0);
 
     //This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            idx = j * Nz + k;      
-            N_idx = idx * depth;   
+            idx = j * Nz + k;       
             sum = 0.0;
 
             // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
@@ -309,10 +330,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             // Loop through and calculate final vector of filter coefficients.
             for (int i = 0; i < 2 * Nv_zs[idx] + 1; ++i) {
-                
-                offset = N_idx + Nz_max;                 
+                              
                 kk = i - Nv_zs[idx];    
-                bv_z[offset + kk] = exp(pi_c * abs(kk) / Nv_zs[idx]) / sum; 
+                bv_z[bvz_offsets[idx] + kk] = exp(pi_c * abs(kk) / Nv_zs[idx]) / sum; 
             }
         }
     }
@@ -320,7 +340,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     //=============================================================================================
     // Find filter half-width and convolution coefficients for v' when filtering in the y-direction
     //=============================================================================================
-
+    b_size = 0;
     // Loop to find integral length scales per cell and get half-widths.
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
@@ -332,6 +352,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
             n_val = 2 * static_cast<int>(n_int);
             Nv_ys[idx] = n_val;
 
+            b_size += 2 * n_val + 1;
+            bvy_offsets[idx] = b_size - n_val; 
+
             if (n_val > Ny_max) Ny_max = n_val;
         }
     }
@@ -339,16 +362,13 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     // Allocate space for random data and filter coefficient arrays.
     N_holder[3] = Ny_max; 
     rv_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
-    depth = 2 * Ny_max + 1;
-    bv_y = Vector(depth * n_cells, 0.0);
+    bv_y = Vector(b_size, 0.0);
 
     // This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
             idx = j * Nz + k;       
-            N_idx = idx * depth;    
-
             sum = 0.0;
 
             // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
@@ -361,10 +381,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             // Loop through and calculate final vector of filter coefficients.
             for (int i = 0; i < 2 * Nv_ys[idx] + 1; ++i) {
-               
-                offset = N_idx + Ny_max;                 
+                            
                 kk = i - Nv_ys[idx];    
-                bv_y[offset + kk] = exp(pi_c * abs(kk) / Nv_ys[idx]) / sum; 
+                bv_y[bvy_offsets[idx] + kk] = exp(pi_c * abs(kk) / Nv_ys[idx]) / sum; 
             }
         }
     }
@@ -375,6 +394,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
     // Reset max filter widths.
     Nz_max = 0, Ny_max = 0;
+    b_size = 0;
 
     // Define integral length scales.
     Iz_out = 0.4 * d_i;
@@ -388,7 +408,10 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             n_int = max(1.0, Iz[idx] / dz[idx]); 
             n_val = 2 * static_cast<int>(n_int);                                             
-            Nw_zs[idx] = n_val;                                                    
+            Nw_zs[idx] = n_val;             
+            
+            b_size += 2 * n_val + 1;
+            bwz_offsets[idx] = b_size - n_val;
 
             if (n_val > Nz_max) Nz_max = n_val;                                        
         }
@@ -397,16 +420,13 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     // Allocate space for random data and filter coefficient arrays.
     N_holder[4] = Nz_max;
     rw_zs = Vector( (Nz + 2 * Nz_max) * Ny, 0.0); 
-    depth = 2 * Nz_max + 1;
-    bw_z = Vector(depth * n_cells, 0.0);
+    bw_z = Vector(b_size, 0.0);
 
     // This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            idx = j * Nz + k;       
-            N_idx = idx * depth;   
-
+            idx = j * Nz + k; 
             sum = 0.0;
 
             // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
@@ -419,10 +439,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
             // Loop through and calculate final vector of filter coefficients.
             for (int i = 0; i < 2 * Nw_zs[idx] + 1; ++i) {
-               
-                offset = N_idx + Nz_max;                 
+                
                 kk = i - Nw_zs[idx];    
-                bw_z[offset + kk] = exp(pi_c * abs(kk) / Nw_zs[idx]) / sum; 
+                bw_z[bwz_offsets[idx] + kk] = exp(pi_c * abs(kk) / Nw_zs[idx]) / sum; 
             }
         }
     }
@@ -430,7 +449,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     //=============================================================================================
     // Find filter half-width and convolution coefficients for w' when filtering in the y-direction
     //=============================================================================================
-
+    b_size = 0;
     // Loop that calculates integral length scales per cell and filter half-widths
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
@@ -442,6 +461,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
             n_val = 2 * static_cast<int>(n_int);
             Nw_ys[idx] = n_val;
 
+            b_size += 2 * n_val + 1;
+            bwy_offsets[idx] = b_size - n_val;
+
             if (n_val > Ny_max) Ny_max = n_val;
         }
     }
@@ -449,16 +471,14 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     // Allocate space for random data and filter coefficient arrays.
     N_holder[5] = Ny_max;
     rw_ys = Vector(Nz * (2 * Ny_max + Ny), 0.0);
-    depth = 2 * Ny_max + 1;
-    bw_y = Vector(depth * n_cells, 0.0);
+    bw_y = Vector(b_size, 0.0);
 
 
     // This loop calculates the vector of filter coefficients for each cell (i,j).
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
 
-            idx = j * Nz + k;       
-            N_idx = idx * depth;    
+            idx = j * Nz + k;  
             sum = 0.0;
 
             // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
@@ -470,10 +490,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
             sum = sqrt(sum);
 
             // Loop through and calculate final vector of filter coefficients.
-            for (int i = 0; i < 2 * Nw_ys[idx] + 1; ++i) {                
-                offset = N_idx + Ny_max;                 
+            for (int i = 0; i < 2 * Nw_ys[idx] + 1; ++i) {                            
                 kk = i - Nw_ys[idx];  
-                bw_y[offset + kk] = exp(pi_c * abs(kk) / Nw_ys[idx]) / sum;
+                bw_y[bwy_offsets[idx] + kk] = exp(pi_c * abs(kk) / Nw_ys[idx]) / sum;
             }
         }
     }
@@ -486,7 +505,7 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
 void DIGITAL_FILTER::filtering_sweeps() {
 
-    int r_idy, r_idz, idx, N_idx, offset, kk;
+    int r_idy, r_idz, idx, kk;
     double sum;
 
     int Nz_pad = N_holder[0];
@@ -499,13 +518,11 @@ void DIGITAL_FILTER::filtering_sweeps() {
             r_idy = ((j + Ny_pad) * Nz + k);                    // Index for r block in y-direction
             r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);       // Index for r block in z-direction
             idx = j * Nz + k;                                   // Index for cell (i,j)
-            N_idx = idx * (2 * Ny_pad + 1);
 
             sum = 0.0;
             for (int i = 0; i < 2 * Nu_ys[idx] + 1; ++i) {
                 kk = i - Nu_ys[idx];
-                offset = N_idx + Ny_pad; 
-                sum += bu_y[offset + kk] * ru_ys[r_idy + kk * Nz];
+                sum += bu_y[buy_offsets[idx] + kk] * ru_ys[r_idy + kk * Nz];
             }
 
             ru_zs[r_idz] = sum; 
@@ -518,19 +535,16 @@ void DIGITAL_FILTER::filtering_sweeps() {
 
             r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);
             idx = j * Nz + k;
-            N_idx = idx * (2 * Nz_pad + 1); 
 
             sum = 0.0;
             for (int i = 0; i < 2 * Nu_zs[idx] + 1; ++i) {
                 kk = i - Nu_zs[idx];
-                offset = N_idx + Nz_pad; 
-                sum += bu_z[offset + kk] * ru_zs[r_idz + kk]; 
+                sum += bu_z[buz_offsets[idx] + kk] * ru_zs[r_idz + kk]; 
             }
 
             u_filt[idx] = sum;
         }
     }
-
 
 
     Nz_pad = N_holder[2];
@@ -543,13 +557,11 @@ void DIGITAL_FILTER::filtering_sweeps() {
             r_idy = ((j + Ny_pad) * Nz + k);                    // Index for r block in y-direction
             r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);       // Index for r block in z-direction
             idx = j * Nz + k;                                   // Index for cell (i,j)
-            N_idx = idx * (2 * Ny_pad + 1);
 
             sum = 0.0;
             for (int i = 0; i < 2 * Nv_ys[idx] + 1; ++i) {
                 kk = i - Nv_ys[idx];
-                offset = N_idx + Ny_pad; 
-                sum += bv_y[offset + kk] * rv_ys[r_idy + kk * Nz];
+                sum += bv_y[bvy_offsets[idx] + kk] * rv_ys[r_idy + kk * Nz];
             }
 
             rv_zs[r_idz] = sum; 
@@ -562,13 +574,11 @@ void DIGITAL_FILTER::filtering_sweeps() {
 
             r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);
             idx = j * Nz + k;
-            N_idx = idx * (2 * Nz_pad + 1); 
 
             sum = 0.0;
             for (int i = 0; i < 2 * Nv_zs[idx] + 1; ++i) {
                 kk = i - Nv_zs[idx];
-                offset = N_idx + Nz_pad; 
-                sum += bv_z[offset + kk] * rv_zs[r_idz + kk]; 
+                sum += bv_z[bvz_offsets[idx] + kk] * rv_zs[r_idz + kk]; 
             }
 
             v_filt[idx] = sum;
@@ -586,13 +596,11 @@ void DIGITAL_FILTER::filtering_sweeps() {
             r_idy = ((j + Ny_pad) * Nz + k);                    // Index for r block in y-direction
             r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);       // Index for r block in z-direction
             idx = j * Nz + k;                                   // Index for cell (i,j)
-            N_idx = idx * (2 * Ny_pad + 1);
 
             sum = 0.0;
             for (int i = 0; i < 2 * Nw_ys[idx] + 1; ++i) {
                 kk = i - Nw_ys[idx];
-                offset = N_idx + Ny_pad; 
-                sum += bw_y[offset + kk] * rw_ys[r_idy + kk * Nz];
+                sum += bw_y[bwy_offsets[idx] + kk] * rw_ys[r_idy + kk * Nz];
             }
 
             rw_zs[r_idz] = sum; 
@@ -605,19 +613,16 @@ void DIGITAL_FILTER::filtering_sweeps() {
 
             r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);
             idx = j * Nz + k;
-            N_idx = idx * (2 * Nz_pad + 1); 
 
             sum = 0.0;
             for (int i = 0; i < 2 * Nw_zs[idx] + 1; ++i) {
-                kk = i - Nw_zs[idx];
-                offset = N_idx + Nz_pad; 
-                sum += bw_z[offset + kk] * rw_zs[r_idz + kk]; 
+                kk = i - Nw_zs[idx];                
+                sum += bw_z[bwz_offsets[idx] + kk] * rw_zs[r_idz + kk]; 
             }
 
             w_filt[idx] = sum;
         }
     }
-
 }
 
 /**
@@ -627,6 +632,7 @@ void DIGITAL_FILTER::filtering_sweeps() {
 void DIGITAL_FILTER::correlate_fields_ts1() {
     
     double b;
+    double max = 0.0;
     
     for (int j = 0; j < Ny; ++j) {
 
@@ -644,8 +650,9 @@ void DIGITAL_FILTER::correlate_fields_ts1() {
             u_fluc[idx] = sqrt(R11[j]) * u_filt[idx];
             v_fluc[idx] = b * u_filt[idx] + sqrt(R22[j] - b * b) * v_filt[idx];
             w_fluc[idx] = sqrt(R33[j]) * w_filt[idx];
+
         }
-    }
+    }   
 
     set_old();
 }
@@ -666,7 +673,7 @@ void DIGITAL_FILTER::correlate_fields() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            u_filt[idx] = u_filt_old[idx] * exp(-pi * dt / (2 * lt)) + u_filt[idx] * sqrt(1 - exp(-pi * dt / lt));
+            u_filt[idx] = u_filt_old[idx] * exp(-pi * dt / (2.0 * lt)) + u_filt[idx] * sqrt(1.0 - exp(-pi * dt / lt));
         }
     }
 
@@ -677,7 +684,7 @@ void DIGITAL_FILTER::correlate_fields() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            v_filt[idx] = v_filt_old[idx] * exp(-pi * dt / (2 * lt)) + v_filt[idx] * sqrt(1 - exp(-pi * dt / lt));
+            v_filt[idx] = v_filt_old[idx] * exp(-pi * dt / (2.0 * lt)) + v_filt[idx] * sqrt(1.0 - exp(-pi * dt / lt));
         }
     }
 
@@ -688,7 +695,7 @@ void DIGITAL_FILTER::correlate_fields() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            w_filt[idx] = w_filt_old[idx] * exp(-pi * dt / (2 * lt)) + w_filt[idx] * sqrt(1 - exp(-pi * dt / lt));
+            w_filt[idx] = w_filt_old[idx] * exp(-pi * dt / (2.0 * lt)) + w_filt[idx] * sqrt(1.0 - exp(-pi * dt / lt));
         }
     }
 
@@ -725,9 +732,9 @@ void DIGITAL_FILTER::set_old() {
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
             int idx = j * Nz + k;
-            u_filt_old[idx] = u_fluc[idx];
-            v_filt_old[idx] = v_fluc[idx];
-            w_filt_old[idx] = w_fluc[idx];
+            u_filt_old[idx] = u_filt[idx];
+            v_filt_old[idx] = v_filt[idx];
+            w_filt_old[idx] = w_filt[idx];
         }
     }
 
@@ -758,10 +765,14 @@ void DIGITAL_FILTER::get_rho_T_fluc() {
  */
 void DIGITAL_FILTER::filter(double dt_input) {
     dt = dt_input;
-   
+
     generate_white_noise();    
     filtering_sweeps();   
     correlate_fields(); 
+
+        
+    string filename = "../files/cpp_vel_fluc.dat";
+    write_tecplot(filename);
   
     // get_rho_T_fluc(); 
 }
@@ -874,8 +885,8 @@ void DIGITAL_FILTER::get_RST() {
     cout << "x_est = " << x_est << endl;
     
     double Cf = 0.0576 / pow(Re * x_est, 1.0/5.0);          // Estimate skin friction coefficient using Prandtl's one-seventh-power law.
-    double tau_w = 0.5 * Cf * rho_e * U_e * U_e;            // Skin friction
-    double u_tau = sqrt(tau_w / rhoy[0]);
+    double tau_w = 33.6;                                    // Skin friction
+    double u_tau = sqrt(tau_w / 0.0264);
     
     cout << "C_f = " << Cf << endl;
     cout << "tau_w = " << tau_w << endl;
@@ -884,11 +895,10 @@ void DIGITAL_FILTER::get_RST() {
 
     // Scale u'_rms / u* to inflow u*
     for (int j = 0; j < vel_file_N_values; ++j) {
-        double u_Mor = sqrt(tau_w / rhoy[j]);
-        u_rms[j] = urms_us[j] * u_Mor;
-        v_rms[j] = vrms_us[j] * u_Mor;
-        w_rms[j] = wrms_us[j] * u_Mor;
-        uv_rms[j] = uvrms_us[j] * u_Mor * u_Mor;
+        u_rms[j] = urms_us[j] * u_tau;
+        v_rms[j] = vrms_us[j] * u_tau;
+        w_rms[j] = wrms_us[j] * u_tau;
+        uv_rms[j] = uvrms_us[j] * u_tau * u_tau;
     }
 
     R11 = Vector(vel_file_N_values, 0.0);
@@ -899,7 +909,7 @@ void DIGITAL_FILTER::get_RST() {
     // Set Reynolds stress terms
     for (int j = 0; j < vel_file_N_values; ++j) {
         R11[j] = u_rms[j] * u_rms[j];
-        R21[j] = -uv_rms[j];
+        R21[j] = uv_rms[j];
         R22[j] = v_rms[j] * v_rms[j];
         R33[j] = w_rms[j] * w_rms[j];
     }
@@ -988,3 +998,21 @@ void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
     cout << "Finished plotting line at z = " << Z << "." << endl;
 }
 
+
+void DIGITAL_FILTER::rms_add(Vector& V)  {
+    
+    rms_counter++;
+
+    for (int i = 0; i < n_cells; ++i) {
+        rms_added[i] +=  V[i] * V[i];
+    }    
+}
+
+
+void DIGITAL_FILTER::get_rms()  {
+    
+    for (int i = 0; i < n_cells; ++i) {
+        rms[i] = sqrt(rms_added[i] / rms_counter);
+    }
+
+}

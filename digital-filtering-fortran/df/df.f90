@@ -108,8 +108,8 @@ contains
         call generate_white_noise(df)
         call filtering_sweeps(df)
         call correlate_fields_ts1(df)
-        filename = "../files/initial-velocity-fluctuations.csv"
-        call write_csv(df, filename)
+        filename = "../files/initial-velocity-fluctuations.dat"
+        call write_tecplot(df, filename)
 
 
         obj = df
@@ -140,7 +140,7 @@ contains
         integer :: j, k, idx
 
         ! set sizes
-        df%Nz = 80
+        df%Nz = 30
         df%Ny = df%vel_file_N_values
         df%n_cells = df%Nz * df%Ny
 
@@ -151,16 +151,16 @@ contains
         allocate(df%dy( (df%n_cells)))
         allocate(df%dz( (df%n_cells)))
 
-        y_max = 0.01
-        eta = 0.0
-        a = 3.0
+        y_max = 2 * df%d_i
+        eta = 0.0_dp
+        a = 2.0_dp
         
 
         !--- First loop: y and z
         do j = df%Ny, 1, -1
             do k = 1, df%Nz + 1
                 eta = real(j, dp) / real(df%Ny + 1, dp)
-                df%y((df%Ny - j) * (df%Nz + 1) + k) = &
+                df%y( abs(df%Ny - j) * (df%Nz + 1) + k) = &
                     y_max * (1.0_dp - tanh(a * eta) / tanh(a))
                 df%z((j - 1) * (df%Nz + 1) + k) = k * 0.00133_dp
             end do
@@ -189,7 +189,7 @@ contains
         allocate(df%rhoy(df%Ny))       
 
         do j = 1, df%Ny
-            df%rhoy(j) = df%rho_e * (0.7_dp * df%yc(j * df%Nz) / df%d_i + 0.5_dp)
+            df%rhoy(j) = df%rho_e * (0.7_dp * df%yc((j-1) * df%Nz) / df%d_i + 0.5_dp)
         end do
     end subroutine rhoy_test
 
@@ -622,6 +622,7 @@ contains
                 idx = (j - 1) * df%Nz + k
 
                 df%u_fluc(idx) = sqrt(df%R11(j)) * df%u_filt(idx)
+                print *, "u_fluc", df%u_fluc(idx)
                 df%v_fluc(idx) = b * df%u_filt(idx) + sqrt(df%R22(j) - b**2) * df%v_filt(idx)
                 df%w_fluc(idx) = sqrt(df%R33(j)) * df%w_filt(idx)
             end do
@@ -648,7 +649,8 @@ contains
             do k = 1, df%Nz
 
                 idx = (j - 1) * df%Nz + k
-                df%u_filt(idx) = df%u_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) + df%u_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
+                df%u_filt(idx) = df%u_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) &
+                                + df%u_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
             end do
         end do
 
@@ -661,7 +663,8 @@ contains
             do k = 1, df%Nz
 
                 idx = (j - 1) * df%Nz + k
-                df%v_filt(idx) = df%v_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) + df%v_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
+                df%v_filt(idx) = df%v_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) &
+                                + df%v_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
             end do
         end do
 
@@ -674,7 +677,8 @@ contains
             do k = 1, df%Nz
 
                 idx = (j - 1) * df%Nz + k
-                df%w_filt(idx) = df%w_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) + df%w_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
+                df%w_filt(idx) = df%w_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) &
+                                + df%w_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
             end do
         end do
 
@@ -885,8 +889,8 @@ contains
         call generate_white_noise(df)   
         call filtering_sweeps(df)
         call correlate_fields(df)     
-        filename = "../files/velocity-fluctuations_+dt.csv"
-        call write_csv(df, filename)
+        filename = "../files/velocity-fluctuations_+dt.dat"
+        call write_tecplot(df, filename)
 
 
     end subroutine filter
@@ -1032,8 +1036,8 @@ contains
         print *, "x_est ", x_est
 
         Cf = 0.0576_dp / (Re * x_est)**(1.0_dp / 5.0_dp)
-        tau_w = 0.5_dp * Cf * df%rho_e * df%U_e**2
-        u_tau = sqrt(tau_w / df%rhoy(1))
+        tau_w = 33.6_dp
+        u_tau = 33.8_dp
 
         print *, "Cf ", Cf
         print *, "tau_w ", tau_w
@@ -1041,7 +1045,7 @@ contains
 
         ! Scale u'_rms / u* to inflow u*
         do i = 1, df%vel_file_N_values
-            u_Mor = sqrt(tau_w / df%rhoy(i))
+            u_Mor = sqrt(tau_w / 0.0264_dp)
             u_rms(i) = urms_us(i) * u_Mor
             v_rms(i) = vrms_us(i) * u_Mor
             w_rms(i) = wrms_us(i) * u_Mor
@@ -1051,7 +1055,7 @@ contains
         ! Set Reynolds stress terms
         do i = 1, df%vel_file_N_values
             df%R11(i) = u_rms(i)**2
-            df%R21(i) = -uv_rms(i)
+            df%R21(i) = uv_rms(i)
             df%R22(i) = v_rms(i)**2
             df%R33(i) = w_rms(i)**2
         end do
@@ -1069,13 +1073,11 @@ contains
         type(digital_filter_type), intent(inout) :: df
         character(len=*), intent(in) :: filename
         integer :: j, k, idx 
-        integer :: unit
+        integer :: unit, ios
 
-        inquire(iolength = unit)
         unit = 20
-
-        open(unit=unit, file=filename, status='replace', action='write', iostat=idx)
-        if (idx /= 0) then
+        open(unit=unit, file=filename, status='replace', action='write', iostat=ios)
+        if (ios /= 0) then
             print *, 'Error opening file: ', filename
             return
         end if
@@ -1084,49 +1086,33 @@ contains
         write(unit, '(A,I0,A,I0,A)') 'ZONE T="Flow Field", I=', df%Nz + 1, ', J=', df%Ny + 1, ', F=BLOCK'
         write(unit, '(A)') 'VARLOCATION=([3-5]=CELLCENTERED)'
 
-        ! Write z coordinates
-        do j = 1, df%Ny + 1
-            do k = 1, df%Nz + 1
-                idx = (j - 1) * (df%Nz + 1) + k
-                write(unit, '(F12.6)') df%z(idx)
-            end do
+        ! z coordinates (node-centered)
+        do idx = 1, (df%Nz+1)*(df%Ny+1)
+            write(unit,'(F12.6)') df%z(idx)
         end do
 
-        ! Write y coordinates
-        do j = 1, df%Ny + 1
-            do k = 1, df%Nz + 1
-                idx = (j - 1) * (df%Nz + 1) + k
-                write(unit, '(F12.6)') df%y(idx)
-            end do
+        ! y coordinates (node-centered)
+        do idx = 1, (df%Nz+1)*(df%Ny+1)
+            write(unit,'(F12.6)') df%y(idx)
         end do
 
-        ! Write u_fluc
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit, '(F12.6)') df%u_fluc(idx)
-            end do
+        ! u, v, w fluctuations (cell-centered)
+        do idx = 1, df%Nz*df%Ny
+            write(unit,'(F12.6)') df%u_fluc(idx)
         end do
 
-        ! Write v_fluc
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit, '(F12.6)') df%v_fluc(idx)
-            end do
+        do idx = 1, df%Nz*df%Ny
+            write(unit,'(F12.6)') df%v_fluc(idx)
         end do
 
-        ! Write w_fluc
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit, '(F12.6)') df%w_fluc(idx)
-            end do
+        do idx = 1, df%Nz*df%Ny
+            write(unit,'(F12.6)') df%w_fluc(idx)
         end do
 
         close(unit)
-        print *, 'Finished plotting.'
+        print *, 'Finished plotting: ', filename
     end subroutine write_tecplot
+
 
 
     subroutine write_csv(df, filename)

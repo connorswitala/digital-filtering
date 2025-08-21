@@ -21,7 +21,7 @@ int main() {
 
     // Call filter procudure with timestep
 
-    double dt = 1e-8;
+    double dt = 1e-5;
     df.filter(dt);
 
     return 0;

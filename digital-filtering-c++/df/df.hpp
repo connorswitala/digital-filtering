@@ -48,12 +48,17 @@ class DIGITAL_FILTER {
 
     Vector bu_y, bv_y, bw_y;    // Data structures for filter coefficients in y-sweep.
     Vector bu_z, bv_z, bw_z;    // Data structures for filter coefficients in y-sweep.
+    Vector buy_offsets, buz_offsets, bvy_offsets, bvz_offsets, bwy_offsets, bwz_offsets;
+    
 
     Vector rho_fluc, T_fluc;
     Vector u_fluc, v_fluc, w_fluc;              // Data structures for final filtered velocity fluctuations.
     Vector u_filt, v_filt, w_filt;              // Data structures to hold new fluctuations. 
     Vector u_filt_old, v_filt_old, w_filt_old;  // Data structures to hold old fluctuations.
     Vector R11, R21, R22, R33;                  // Reynolds stress terms
+
+    int rms_counter;
+    Vector rms_added, rms;
 
     double dt;
 
@@ -85,6 +90,8 @@ class DIGITAL_FILTER {
     void test();                                // Used for testing purposes.        
     void display_data(Vector& v);               // Displays the data in the vector.
     void find_mean_variance(Vector& v);         // Finds the mean and variance of the vector.
+    void rms_add(Vector& V);
+    void get_rms();
 
     /** 
      *  The following function opens a file that contains rms values for u', w', and w' that are normalized by the Morokovin

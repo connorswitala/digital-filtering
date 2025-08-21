@@ -11,7 +11,7 @@ program test_df
     ! Configuration variables.
     config%d_i = 0.0013_dp
     config%rho_e = 0.044_dp
-    config%U_e = 869.0_dp
+    config%U_e = 869.1_dp
     config%mu_e = 1.8e-5_dp
     config%grid_file = 'grid.dat'
     config%vel_fluc_file = "../files/M6Tw025_Stat.dat"

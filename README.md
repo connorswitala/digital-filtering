@@ -2,6 +2,11 @@
 
 This library contains the class "DIGITAL_FILTER" which was created to use digital filtering to seed inflow with velocity, temperature, and density fluctuations. The code is currently "complete" in the sense that everything is set up to create velocity fluctuations. There are currently data structures that are used that have no values attached to them (or test values added in). Once these are taken care of it should work fine. 
 
+## Recent fixes 
+
+1) The memory for the convolution coefficients has been updated to have dynamic storage based on the half width of cell (i,j). Instead of taking the maximum half width and making that the number of entries used for **every** cell's convolution coefficient, the storage for the B-vectors are created in loops, and an offset vector of size (Nz * Ny) is created that holds how far into the B-vector does cell (i,j)'s convolution coefficient start. This means that every entry of B is used and there is no wasted space.
+
+
 ## Directories 
 1) "digital-filtering-c++" is the c++ directory for the DIGITAL_FILTERING class that has everything necessary to run digital filtering. Within it are three subdirectories and a makefile. 'df' contains the .cpp and .hpp file. 'pcg-cpp' contains the library that is used for random number generation. 'test' contains a test file for debugging called 'cpp-main.cpp' that should also show how the library is used. There is also a Makefile to build the program in c++
 2) "digital-filtering-fortran" is the fortran directory and contains the the DIGITAL_FILTERING module and types. Like above, containts a 'df' and 'test' directory along with a Makefile to build the Fortran files. 
@@ -45,11 +50,9 @@ tau_w = 0.5 * Cf * rho_e * U_e^2. This coefficient is used to find the Morkovin 
 
 6) This code only creates fluctuations up the point that Duan stopped collecting data. That means that fluctuations cannot be created past y/delta = 1.5. I don't know enough about turbulence to state if this is physical, but if fluctuations are needed past this point, we will need to figure out a way to add more fluctuations past this y-point. 
 
-7) I have just updated the way the filter works. I needed to create individual vectors for the filter coeffients **for every cell (i,j)**. I currently have it implemented so that I find the maximum filter width and then the size of the vector for coefficients is (2 * N_max + 1) * (Ny * Nz). However, in some cases, the filter width is quite large. This means that for the cells with large filter widths, it fills in the entire B vector for the cell (i,j) ( cell (i,j) holds 2 * N_max + 1 values in vector B as B is a 1D flattened vector). Unfortunately, this means that whereever a cell has a small filter width and therefore only need ~ 5 filter coefficients calculated, all memory spots in the vector B around these 5 coefficients are set to 0. This is a waste of good memory. It was relatively easy (not really, but **easier**) to do it this way then to dynamically create a B vector of size { (Ny * Nz) * (cell[i,j] filter width) + (Ny * Nz) * (cell[i + 1,j] filter width) + ...}. This would suck to do, but I have ideas on how to fix it if necessary.
+7) The viscous length scale d_v needs to be calculated. I have been using an estimation for now, but I should be able to get this value easily once I have all the mean wall-normal flow variables read in.
 
-8) The viscous length scale d_v needs to be calculated. I have been using an estimation for now, but I should be able to get this value easily once I have all the mean wall-normal flow variables read in.
-
-9) MPI support to distribute result to different cores.
+8) MPI support to distribute result to different cores.
 
 ## How the code works:
 
@@ -63,5 +66,4 @@ r*_(k + j). The random data is now filtered.
 
 
 Once the data is filtered, the data needs to be correlated and scaled. It first correlates the fluctuations with the fluctuations from the last time step. Then it scales these fluctuations using values from the RST. Finally, the temperature and density fluctuations are found using these velocity fluctuations using the Strong Reynolds Analogy. 
-
 
