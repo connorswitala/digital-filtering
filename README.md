@@ -3,27 +3,28 @@
 This library contains the class "DIGITAL_FILTER" which was created to use digital filtering to seed inflow with velocity, temperature, and density fluctuations. The code is currently "complete" in the sense that everything is set up to create velocity fluctuations. There are currently data structures that are used that have no values attached to them (or test values added in). Once these are taken care of it should work fine. 
 
 ## Directories 
-1) "digital-filtering-c++" is the c++ directory for the class that has both a .hpp and .cpp file in a nested one called "df". 
-2) "digital-filtering-fortran" is the fortran directory. The main module is in the nested "df" directory.
-3) "files" is where data files are stored. Currently, just the fluctuation file from Duan et all is there. This is also where mean profiles for the boundary layer flow will be store. 
-4) "pcg-cpp" is the PCG library that is used for white noise random number generation.
-5) "programs" is where the build executables go (really just for test programs)
-6) "build" is where the built object files go. 
-7) The c++ and fortran folders each have a "test" folder where I run test programs. 
+1) "digital-filtering-c++" is the c++ directory for the DIGITAL_FILTERING class that has everything necessary to run digital filtering. Within it are three subdirectories and a makefile. 'df' contains the .cpp and .hpp file. 'pcg-cpp' contains the library that is used for random number generation. 'test' contains a test file for debugging called 'cpp-main.cpp' that should also show how the library is used. There is also a Makefile to build the program in c++
+2) "digital-filtering-fortran" is the fortran directory and contains the the DIGITAL_FILTERING module and types. Like above, containts a 'df' and 'test' directory along with a Makefile to build the Fortran files. 
+3) "files" is where data files are stored for plots or files to be read in.
+4) "programs" is where the built executable files go for both Fortran and C++.
+5) "build" is where the .o and .mod files go. There are separate directories for both C++ and Fortran build files.
+6) There is a master Makefile that is used in the master directory to build both codes.
+7) us3d-user.f90 is an example Fortan code given to me by Graham B.
 
 
 ## Necessary inputs
-In its current state, it only takes structured grids with perfect quadrilaterals. When initializing the constructor you will need a number of things.
+In its current state, it only takes structured grids with perfect quadrilaterals. When initializing the constructor you will need a number of things. These are taken in a a 'dc_config' type.
 
-1) The inflow boundary layer height delta_i.
-2) The name of the grid file you want to read it. In the codes current state it should be a structured cartesian grid.
-3) The name of the file you use to grab velocity fluctuations in order to create the Reynolds stress tensor (RST) to scale the filtered fluctuations. 
-4) An integer offset to skip 'n' number of header lines in said fluctuation file. 
-5) An integer to read in 'n' lines from said fluctuation file.
-6) Freestream values for viscosity, density, and velocity.
-7) Mean profiles for density, velocity, mach number, and temperature. 
+First, create the configuration type in Fortran or C++. Here, it will be named 'config'. Then fill in:
+1) The inflow boundary layer height: config.d_i 
+2) The name of the grid file you want to read it (might end up being deprecated): config.grid_file
+3) The name of the file you use to grab velocity fluctuations in order to create the Reynolds stress tensor (RST) to scale the filtered fluctuations: config.vel_fluc_file
+4) An integer offset to skip 'n' number of header lines in said fluctuation file: config.vel_file_offset
+5) An integer to read in 'n' lines from said fluctuation file: config.vel_file_N_values
+6) Freestream values for viscosity, density, and velocity: config.rho_e, .U_e, .mu_e
+7) Mean profiles for density, velocity, mach number, and temperature (not finished). 
 
-Once the constructor is set up, a single function needs to be used, "filter(double dt_input)". This function needs the timestep for the current CFD iteration to update the fluctuations appropriately. This function does everything necessaryto create all fluctuations. The constructor runs a version of this to create fluctuations at the first time step, so it does not need to be called for the intial timestep.
+Once the constructor is set up, a single function needs to be used, "filter(dt_input)". This function needs the timestep for the current CFD iteration to update the fluctuations appropriately. This function does everything necessary to create all fluctuations. The constructor runs a version of this to create fluctuations at the first time step, so it does not need to be called for the intial timestep.
 
 
 ## Current code issues:
@@ -52,15 +53,15 @@ tau_w = 0.5 * Cf * rho_e * U_e^2. This coefficient is used to find the Morkovin 
 
 ## How the code works:
 
-As previously stated, this library uses digital filtering to simulate inflow turbulence. By inputting everything necessary, it creates turbulence mostly within the specified boundary layer height, d_i. Calling the constructor initializes a number of variables that are used everytime the filtering process is called. If first reads in the velocity fluctuation rms data (currently using Zhang, Duan, and Choudhari's .dat files of which our first case if the M6Tw025 run) in order to form the Reynolds-stress tensor that is used for scaling the filtered data.
+As previously stated, this library uses digital filtering to simulate inflow turbulence. By inputting everything necessary, it creates turbulence mostly within the specified inflow boundary layer height, d_i. Calling the constructor initializes a number of variables that are used everytime the filtering process is called. It first reads in the velocity fluctuation rms data (currently using Zhang, Duan, and Choudhari's .dat files of which our first case if the M6Tw025 run) in order to form the Reynolds-stress tensor that is used for scaling the filtered data. The constructor also calculates the filter half-width and convolution coefficients. These values stay the same forever, so they do not need to be recalculated after the initialization. 
 
 After reading this and setting the number of points in the y-direction for filtering equal to the number of velocity flucation data points read in from the file, the constructor creates a number of data structures of size Ny * Nz (all cells in spanwise direction are filtered). Somehow, the grid is then read and vertices / cell width and heights are stored in vectors. Note, all vectors are 1D flattened array of size Ny * Nz. 
 
-After this, the filtered coeffecient and half-widths are calculated. These values stay the same forever, so they do not need to be recalculated after the initialization. Six different vectors of convolution coefficients 'b' are created. 2 for each velocity. Each velocity gets one filter width and vector of filter coefficients for each filter direction, y and z. The white noise generation fills in random values with 0 mean and a variance of 1. It then filters these for u', v', w' in the y-direction first with 
+Six different vectors of convolution coefficients 'b' are created. 2 for each velocity. Each velocity gets one filter width and vector of filter coefficients for each filter direction, y and z. The white noise generation fills in random values with 0 mean and a variance of 1. It then filters these for u', v', w' in the y-direction first with 
 r*(k) = sum_(j = -N) ^ (N) b_j *  r_(k + j) for all of the cells, where 'k' denotes cell number. It then sweeps in the z-direction using v(k) = sum_(j = -N) ^ (N) b_j *  
 r*_(k + j). The random data is now filtered.
 
 
-Once the data is filtered, the data needs to be correlated and scaled. It first correlates the fluctuations with the fluctuations from the last time step. Then it scales these fluctuations using values from the RST. Finally, the temperature and density fluctuations are found using these velocity fluctuations. 
+Once the data is filtered, the data needs to be correlated and scaled. It first correlates the fluctuations with the fluctuations from the last time step. Then it scales these fluctuations using values from the RST. Finally, the temperature and density fluctuations are found using these velocity fluctuations using the Strong Reynolds Analogy. 
 
 

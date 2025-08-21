@@ -5,9 +5,10 @@ program test_df
     INTEGER,PARAMETER :: dp = selected_real_kind(15)
     real(kind=dp) :: dt
 
-    type(digital_filter_type) :: df ! Create the digital filter
-    type(df_config) :: config        ! Create the configuration for input to construtor function
+    type(digital_filter_type) :: df     ! Create the digital filter
+    type(df_config) :: config           ! Create the configuration for input to construtor function
 
+    ! Configuration variables.
     config%d_i = 0.0013_dp
     config%rho_e = 0.044_dp
     config%U_e = 869.0_dp
@@ -23,6 +24,5 @@ program test_df
     ! Call the filter with a timestep
     dt = 1e-8_dp
     call filter(df, dt)
-
 
 end program test_df

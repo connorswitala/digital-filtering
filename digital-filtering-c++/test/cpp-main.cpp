@@ -2,8 +2,10 @@
 
 int main() {
 
+    // Create configuration struct
     df_config config;
 
+    // Configuration variables. 
     config.grid_file = "grid_file_here";
     config.vel_fluc_file = "../files/M6Tw025_Stat.dat";
     config.rho_e = 0.044;
