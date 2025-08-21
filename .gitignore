@@ -3,3 +3,5 @@
 *.dat
 *.txt
 *.png
+
+!M6Tw025_Stat.dat
