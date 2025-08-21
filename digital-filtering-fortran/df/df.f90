@@ -3,7 +3,7 @@
 module DIGITAL_FILTERING
     implicit none
     private
-    public :: digital_filter_type, create_digital_filter, test, filter
+    public :: digital_filter_type, create_digital_filter, test, filter, df_config
 
     INTEGER,PARAMETER :: dp = selected_real_kind(15)
     real(kind=dp), PARAMETER :: pi = acos(-1.0_dp)
@@ -45,31 +45,37 @@ module DIGITAL_FILTERING
     
     end type digital_filter_type
 
+
+
+    type :: df_config
+        real(kind=dp) :: d_i, rho_e, U_e, mu_e
+        integer :: vel_file_offset, vel_file_N_values
+        character(len=256) :: grid_file, vel_fluc_file
+    end type df_config
+
 contains
 
     !   Constructor subroutine
 
-    function create_digital_filter(d_i, rho_e, U_e, mu_e, grid_file, vel_fluc_file, vel_file_offset, vel_file_N_values) result(obj)
+    function create_digital_filter(config) result(obj)
         implicit none
-        real(kind=dp), intent(in) :: d_i, rho_e, U_e, mu_e
-        character(len=*), intent(in) :: grid_file, vel_fluc_file
-        integer, intent(in) :: vel_file_offset, vel_file_N_values
+        type(df_config), intent(in) :: config
+        character(len=50) :: filename
         type(digital_filter_type) :: obj
         type(digital_filter_type) :: df
 
-        df%d_i = d_i
-        df%rho_e = rho_e
-        df%U_e = U_e
-        df%mu_e = mu_e
-        df%grid_file = grid_file
-        df%vel_fluc_file = vel_fluc_file
-        df%vel_file_offset = vel_file_offset
-        df%vel_file_N_values = vel_file_N_values
+        df%d_i = config%d_i
+        df%rho_e = config%rho_e
+        df%U_e = config%U_e
+        df%mu_e = config%mu_e
+        df%grid_file = config%grid_file
+        df%vel_fluc_file = config%vel_fluc_file
+        df%vel_file_offset = config%vel_file_offset
+        df%vel_file_N_values = config%vel_file_N_values
 
         call read_grid(df)
         call rhoy_test(df)
         call get_RST(df)
-        print *, "RST calculated"
 
         allocate(df%Iy(df%n_cells))
         allocate(df%Iz(df%n_cells))
@@ -97,6 +103,15 @@ contains
 
      
         call calculate_filter_properties(df)
+
+        ! First timestep
+        call generate_white_noise(df)
+        call filtering_sweeps(df)
+        call correlate_fields_ts1(df)
+        filename = "../files/initial-velocity-fluctuations.csv"
+        call write_csv(df, filename)
+
+
         obj = df
     end function create_digital_filter
 
@@ -861,11 +876,18 @@ contains
         implicit none
         type(digital_filter_type), intent(inout) :: df
         real(kind=dp), intent(in) :: dt_input
+        real(kind=dp) :: start, end, elapsed
+        character(len=50) :: filename
+        integer :: i
+
         df%dt = dt_input
 
-        call generate_white_noise(df)
+        call generate_white_noise(df)   
         call filtering_sweeps(df)
-        call correlate_fields(df)
+        call correlate_fields(df)     
+        filename = "../files/velocity-fluctuations_+dt.csv"
+        call write_csv(df, filename)
+
 
     end subroutine filter
 
@@ -910,11 +932,12 @@ contains
     subroutine test(df)
         implicit none
         type(digital_filter_type), intent(inout) :: df
-
+        character(len=50) :: filename
+        filename = "../../files/fluc.csv"
         call generate_white_noise(df)
         call filtering_sweeps(df)
         call correlate_fields_ts1(df)
-        call write_csv(df)    
+        call write_csv(df, filename)    
     end subroutine test
 
     subroutine find_mean_variance(df, v)
@@ -1106,14 +1129,12 @@ contains
     end subroutine write_tecplot
 
 
-    subroutine write_csv(df)
+    subroutine write_csv(df, filename)
         implicit none
         type(digital_filter_type), intent(in) :: df
-        character(len=50) :: filename
+        character(len=*), intent(in) :: filename
         integer :: j, k, idx, iidx
         integer :: unit
-
-        filename = "../files/velocity-fluctuations.csv"
 
         ! Assign a free file unit
         unit = 20

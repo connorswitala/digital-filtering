@@ -17,6 +17,13 @@ constexpr double pi_c = -2 * 3.14159265358979323846; // This is a constant used 
 using namespace std;
 typedef vector<double> Vector;
 
+
+struct df_config {
+    double d_i, rho_e, U_e, mu_e;
+    int vel_file_offset, vel_file_N_values;
+    string grid_file, vel_fluc_file;
+};
+
 class DIGITAL_FILTER {
 
     private:
@@ -65,9 +72,7 @@ class DIGITAL_FILTER {
 
     public:
 
-    DIGITAL_FILTER(double d_i, double rho_e, double U_e, double mu_e,
-                   string grid_file, string vel_fluc_file,
-                   int vel_file_offset, int vel_file_N_values);
+    DIGITAL_FILTER(df_config config);
 
     void generate_white_noise();                // Generates white noise for the filtering.
     void calculate_filter_properties();         // Calculates filter properties for the filtering.

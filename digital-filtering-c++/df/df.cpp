@@ -1,12 +1,17 @@
 #include "df.hpp"
 
 // Constructor
-DIGITAL_FILTER::DIGITAL_FILTER(double d_i, double rho_e, double U_e, double mu_e,
-    string grid_file, string vel_fluc_file, 
-    int vel_file_offset, int vel_file_N_values) : 
-    d_i(d_i), rho_e(rho_e), U_e(U_e), mu_e(mu_e), 
-    grid_file(grid_file), vel_fluc_file(vel_fluc_file),
-    vel_file_offset(vel_file_offset), vel_file_N_values(vel_file_N_values) {
+DIGITAL_FILTER::DIGITAL_FILTER(df_config config) {
+
+    d_i = config.d_i;
+    rho_e = config.rho_e;
+    U_e = config.rho_e;
+    mu_e = config.mu_e;
+    grid_file = config.grid_file;
+    vel_fluc_file = config.vel_fluc_file;
+    vel_file_offset = config.vel_file_offset;
+    vel_file_N_values = config.vel_file_N_values;
+
 
     read_grid();        // Eventually this will be important. Currently it just makes up my own grid for testing.
     rho_y_test();       // This will be deleted after I can read in rhoy values and not make some up.  
@@ -39,9 +44,9 @@ DIGITAL_FILTER::DIGITAL_FILTER(double d_i, double rho_e, double U_e, double mu_e
 
     calculate_filter_properties(); // Initialize coefficients and filter half-widths. 
     // First timestep filtering.
-    // generate_white_noise();
-    // filtering_sweeps();
-    // correlate_fields_ts1();
+    generate_white_noise();
+    filtering_sweeps();
+    correlate_fields_ts1();
     // get_rho_T_fluc(); 
 
 }
@@ -57,7 +62,6 @@ void DIGITAL_FILTER::read_grid() {
     Ny = vel_file_N_values;
     n_cells = Nz * Ny;
 
-    cout << "CFD number of cells: " << n_cells << endl;
 
     y = Vector((Ny + 1) * (Nz + 1), 0.0); 
     z = Vector((Ny + 1) * (Nz + 1), 0.0); 
@@ -666,7 +670,7 @@ void DIGITAL_FILTER::correlate_fields() {
         }
     }
 
-    // Timestep correlation v'
+    // Timestep correlation for v'
     Ix = 0.3 * d_i;
     lt = Ix / U_e;
 
@@ -677,7 +681,7 @@ void DIGITAL_FILTER::correlate_fields() {
         }
     }
 
-    // Timestep correlation in w'
+    // Timestep correlation fir w'
     Ix = 0.3 * d_i;
     lt = Ix / U_e;
 
@@ -754,10 +758,12 @@ void DIGITAL_FILTER::get_rho_T_fluc() {
  */
 void DIGITAL_FILTER::filter(double dt_input) {
     dt = dt_input;
-    generate_white_noise();
-    filtering_sweeps();
+   
+    generate_white_noise();    
+    filtering_sweeps();   
     correlate_fields(); 
-    get_rho_T_fluc(); 
+  
+    // get_rho_T_fluc(); 
 }
 
 /**
@@ -765,11 +771,9 @@ void DIGITAL_FILTER::filter(double dt_input) {
  */
 void DIGITAL_FILTER::test() {
 
-    display_data(R11);
 
     // generate_white_noise();
     // filtering_sweeps();
-    // display_data(u_filt);
     // correlate_fields_ts1();
 
     // // Write fluctuations to a file.
