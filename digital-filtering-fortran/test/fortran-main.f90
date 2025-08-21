@@ -23,6 +23,6 @@ program test_df
 
     ! Call the filter with a timestep
     dt = 1e-8_dp
-    call filter(df, dt)
+    call get_rms(df)
 
 end program test_df

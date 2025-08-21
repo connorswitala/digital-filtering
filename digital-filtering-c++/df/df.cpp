@@ -50,9 +50,13 @@ DIGITAL_FILTER::DIGITAL_FILTER(df_config config) {
     Ty = Vector(Ny);
     rho_fluc = Vector(n_cells);
     T_fluc = Vector(n_cells);
-    rms_added = Vector(n_cells, 0.0);
-    rms = Vector(n_cells, 0.0);
 
+    urms_added = Vector(n_cells, 0.0);
+    urms = Vector(n_cells, 0.0);
+    vrms_added = Vector(n_cells, 0.0);
+    vrms = Vector(n_cells, 0.0);
+    wrms_added = Vector(n_cells, 0.0);
+    wrms = Vector(n_cells, 0.0);
     calculate_filter_properties(); // Initialize coefficients and filter half-widths. 
 
     cout << "Calculated filter properties" << endl;
@@ -102,6 +106,7 @@ void DIGITAL_FILTER::read_grid() {
             y[abs(j - Ny) * (Nz + 1) + k] = y_max * (1 - tanh(a * eta) / tanh(a)); 
             z[j * (Nz + 1) + k] = k * 0.000133;
         }
+        cout << y[abs(j - Ny) * (Nz + 1)] << endl;
     }
 
     for (int j = 0; j < Ny; ++j) {
@@ -158,9 +163,9 @@ void DIGITAL_FILTER::calculate_filter_properties() {
 
 
     // Holders for maximum filter widths for creating ghost cells.
-    double Ny_max = 0; Nz_max = 0;
+    double Nz_max, Ny_max;
     double n_int, sum, val; 
-    int idx, kk, n_val, b_size = 0;
+    int idx, kk, n_val, b_size;
 
     //=============================================================================================
     // Find filter half-width and convolution coefficients for u' when filtering in the z-direction
@@ -170,6 +175,10 @@ void DIGITAL_FILTER::calculate_filter_properties() {
     // Integral length scales
     Iz_out = 0.4 * d_i; 
     Iz_inn = 150 * d_v; 
+
+    Ny_max = 0;
+    Nz_max = 0;
+    b_size = 0; 
 
     // Loop to find integral length scales per cell and get half-widths. 
     for (int j = 0; j < Ny; ++j) {
@@ -929,9 +938,9 @@ void DIGITAL_FILTER::write_tecplot(const string &filename) {
     file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
 
 
-    // Loop over y (rows) and z (columns)
+// Loop over y (rows) and z (columns)
     for (int j = 0; j < Ny + 1; ++j) {
-        for (int k = 0; k < Nz + 1; ++k) {
+            for (int k = 0; k < Nz + 1; ++k) {
             int idx = j * (Nz + 1) + k;  // row-major: y-major
             file << z[idx] << endl;
         }
@@ -999,20 +1008,89 @@ void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
 }
 
 
-void DIGITAL_FILTER::rms_add(Vector& V)  {
+void DIGITAL_FILTER::rms_add()  {
     
     rms_counter++;
 
     for (int i = 0; i < n_cells; ++i) {
-        rms_added[i] +=  V[i] * V[i];
+        urms_added[i] +=  u_fluc[i] * u_fluc[i];
+        vrms_added[i] +=  v_fluc[i] * v_fluc[i];
+        wrms_added[i] +=  w_fluc[i] * w_fluc[i];
     }    
 }
 
 
 void DIGITAL_FILTER::get_rms()  {
     
-    for (int i = 0; i < n_cells; ++i) {
-        rms[i] = sqrt(rms_added[i] / rms_counter);
+    dt = 1e-5;
+    for (int i = 0; i < 500; ++i) {
+        generate_white_noise();    
+        filtering_sweeps();   
+        correlate_fields(); 
+        rms_add();
     }
 
+    plot_rms();
+
 }
+
+void DIGITAL_FILTER::plot_rms() {
+
+    for (int i = 0; i < n_cells; ++i) {
+        urms[i] = sqrt(urms_added[i] / rms_counter);
+        vrms[i] = sqrt(vrms_added[i] / rms_counter);
+        wrms[i] = sqrt(wrms_added[i] / rms_counter);
+    }
+
+    string filename = "../files/cpp_vel_fluc_rms.dat";
+
+    ofstream file(filename);
+    file << "VARIABLES = \"z\", \"y\", \"u'_rms\", \"v'_rms\", \"w'_rms\" \n";
+    file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
+    file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
+
+
+    // Loop over y (rows) and z (columns)
+    for (int j = 0; j < Ny + 1; ++j) {
+            for (int k = 0; k < Nz + 1; ++k) {
+            int idx = j * (Nz + 1) + k;  // row-major: y-major
+            file << z[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny + 1; ++j) {
+        for (int k = 0; k < Nz + 1; ++k) {
+            int idx = j * (Nz + 1) + k;  // row-major: y-major
+            file << y[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << urms[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << vrms[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << wrms[idx] << endl;
+        }
+    }
+
+    file.close();
+    cout << "Finished plotting." << endl;
+}
+

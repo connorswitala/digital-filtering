@@ -22,7 +22,7 @@ int main() {
     // Call filter procudure with timestep
 
     double dt = 1e-5;
-    df.filter(dt);
+    df.get_rms();
 
     return 0;
 }
