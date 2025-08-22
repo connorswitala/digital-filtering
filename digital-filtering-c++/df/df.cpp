@@ -1,8 +1,9 @@
  #include "df.hpp"
 
 // Constructor
-DIGITAL_FILTER::DIGITAL_FILTER(df_config config) : u(), v(), w() {
+DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
 
+    // Set class members equal to config counterparts
     d_i = config.d_i;
     rho_e = config.rho_e;
     U_e = config.U_e;
@@ -23,7 +24,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(df_config config) : u(), v(), w() {
     allocate_data_structures(v);
     allocate_data_structures(w);
 
-    // Integral length scales and filter half-widths.
+    // Integral length scales
     u.Iz_out = 0.4 * d_i;
     u.Iz_inn = 150 * d_v;
     u.Lt = 0.8 * d_i / U_e;
@@ -49,41 +50,19 @@ DIGITAL_FILTER::DIGITAL_FILTER(df_config config) : u(), v(), w() {
     calculate_filter_properties(w);
 
     // First timestep filtering.
-    generate_white_noise();
 
+    generate_white_noise();
     filtering_sweeps(u);
     filtering_sweeps(v);
     filtering_sweeps(w);
-
-    // Only need to apply RST scaling for the first time step. No correlation is done.
     apply_RST_scaling();
 
-
     // get_rho_T_fluc(); 
-
-
 }
 
-void DIGITAL_FILTER::allocate_data_structures(FilterField& F) {
-    F.N_ys = vector<int>(n_cells);
-    F.N_zs = vector<int>(n_cells);
-    F.fluc = Vector(n_cells);
-    F.filt = Vector(n_cells);
-    F.filt_old = Vector(n_cells);
-    F.by_offsets = vector<int>(n_cells);
-    F.bz_offsets = vector<int>(n_cells);
-}
 
-void DIGITAL_FILTER::allocate_rms_structures(FilterField F) {
-    F.rms_added = Vector(n_cells, 0.0);
-    F.rms = Vector(n_cells, 0.0);
-}
+// ========: Filtering functions :========
 
-/** 
- *  Somehow, this function reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
- *  I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
- *  dy, dz and intgeres Nz, Ny populated with the data from the file. 
-*/
 void DIGITAL_FILTER::read_grid() {
 
     Nz = 30;
@@ -127,44 +106,16 @@ void DIGITAL_FILTER::read_grid() {
     }
 }
 
-/**
- *  This function is used to test the rho_y vector.
- */
-void DIGITAL_FILTER::rho_y_test() {
-    rhoy = Vector(Ny, 0.0);
-    for (int j = 0; j < Ny; ++j) {
-        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.6);
-    }
+void DIGITAL_FILTER::allocate_data_structures(FilterField& F) {
+    F.N_ys = vector<int>(n_cells);
+    F.N_zs = vector<int>(n_cells);
+    F.fluc = Vector(n_cells);
+    F.filt = Vector(n_cells);
+    F.filt_old = Vector(n_cells);
+    F.by_offsets = vector<int>(n_cells);
+    F.bz_offsets = vector<int>(n_cells);
 }
 
-/**
- *  This function generates white noise for the filtering. It uses the PCG random number generator 
- *  to generate normally distributed random numbers.
- */
-void DIGITAL_FILTER::generate_white_noise() {
-
-    static pcg32 rng{random_device{}()}; 
-    static normal_distribution<> dist(0.0, 1.0);
-
-    auto fill_with_normals = [&](auto &vec) {
-        for (auto &val : vec) {
-            val = dist(rng);
-        }
-    };
-
-    fill_with_normals(u.r_ys);
-    fill_with_normals(u.r_zs);
-    fill_with_normals(v.r_ys);
-    fill_with_normals(v.r_zs);
-    fill_with_normals(w.r_ys);
-    fill_with_normals(w.r_zs);
-}
-
-/**
- *  This function uses prescribed integral length scales Iz and Iy to find the filter width
- *  for each cell as well as calculating the convolution coefficients and create the storage for 
- *  white noise vectors. It is only called in the constructor and is not called again.
- */
 void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
 
     double n_int, sum, val, Iy; 
@@ -251,213 +202,6 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
     }
 }
 
-/** 
- *  This functions filters the random data in y and z seeps using the filter coefficients and filter widths 
- *  previously calculated. The filtering is done in two sweeps, first in y and then in z direction.
- *  */
-
-void DIGITAL_FILTER::filtering_sweeps(FilterField& F) {
-
-    int r_idy, r_idz, idx;
-    double sum;
-
-    int Nz_pad = F.Nz_max;
-    int Ny_pad = F.Ny_max;
-
-    // Filter in y-direction. 
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-
-            r_idy = ((j + Ny_pad) * Nz + k);                    // Index for r block in y-direction
-            r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);       // Index for r block in z-direction
-            idx = j * Nz + k;                                   // Index for cell (i,j)
-
-            sum = 0.0;
-            for (int i = -F.N_ys[idx]; i < F.N_ys[idx]; ++i) {
-                sum += F.by[F.by_offsets[idx] + i] * F.r_ys[r_idy + i * Nz];
-            }
-
-            F.r_zs[r_idz] = sum; 
-        }
-    }
-
-    // Filter in z-direction.
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-
-            r_idz = (j * (Nz + 2 * Nz_pad) + Nz_pad + k);
-            idx = j * Nz + k;
-
-            sum = 0.0;
-            for (int i = -F.N_zs[idx]; i < F.N_zs[idx]; ++i) {
-                sum += F.bz[F.bz_offsets[idx] + i] * F.r_zs[r_idz + i]; 
-            }
-
-            F.filt[idx] = sum;
-        }
-    }
-}
-
-/**
- *  This scales the fluctuations by the Reynolds stress tensor R_ij. It is only for the first time step 
- *  so it doesnt correlate the old fluctuations with the new ones. 
- */
-void DIGITAL_FILTER::apply_RST_scaling() {
-    
-    double b;
-    double max = 0.0;
-    
-    for (int j = 0; j < Ny; ++j) {
-
-        if (R11[j] < 1e-10) {
-            b = 0.0;
-        }       
-        else {
-            b = R21[j] / sqrt(R11[j]); 
-        } 
-
-        for (int k = 0; k < Nz; ++k) {
-
-            int idx = j * Nz + k;            
-
-            u.fluc[idx] = sqrt(R11[j]) * u.filt[idx];
-            v.fluc[idx] = b * u.filt[idx] + sqrt(R22[j] - b * b) * v.filt[idx];
-            w.fluc[idx] = sqrt(R33[j]) * w.filt[idx];
-
-        }
-    }   
-
-    set_old();
-}
-
-/**
- *  This scales the fluctuations by the Reynolds stress tensor R_ij. It then correclates the old fields 
- *  with the new ones by using an integral length/time scale.
- */
-void DIGITAL_FILTER::correlate_fields(FilterField& F) {
-    
-    double b;
-    double pi = 3.141592654;
-
-    for (int idx = 0; idx < n_cells; ++idx) {
-        F.filt[idx] = F.filt_old[idx] * exp(-pi * dt / (2.0 * F.Lt)) + F.filt[idx] * sqrt(1.0 - exp(-pi * dt / F.Lt));
-    }
-
-    set_old();
-}
-
-/**
- * This sets old fluctuations to new ones. 
- */
-void DIGITAL_FILTER::set_old() {
-
-    for (int idx = 0; idx < n_cells; ++idx) { 
-        u.filt_old[idx] = u.filt[idx];
-        v.filt_old[idx] = v.filt[idx];
-        w.filt_old[idx] = w.filt[idx];        
-    }
-
-}
-
-/** 
- *  This function uses the Strong Reynolds Analogy to find fluctuations for temperature and density assuming 
- *  pressure is constant in the boundary layer. It currently assumes constant gamma = 1.4
- */
-void DIGITAL_FILTER::get_rho_T_fluc() {
-    for (int j = 0; j < Ny; ++j) {
-
-        double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j];
-
-        for (int k = 0; k < Nz; ++k) {            
-
-            double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j] * u.fluc[j * Nz + k];
-
-            T_fluc[j * Nz + k] = val * u.fluc[j * Nz + k];
-            rho_fluc[j * Nz + k] = -val * u.fluc[j * Nz + k] / Ty[j] * rhoy[j]; 
-
-        }
-    }
-}
-
-/**
- *  This runs all the filtering processes and updates the fluctuations. This is the only function that should 
- *  be called from the main program after initializing the DIGITAL_FILTER object. It generates white noise, filters 
- *  the velocity fluctuations in y and z sweeps, and correlates the fields. @param dt_input is the time step size 
- *  from the CFD simulation.
- */
-void DIGITAL_FILTER::filter(double dt_input) {
-
-    dt = dt_input;
-
-    generate_white_noise();    
-    filtering_sweeps(u);
-    filtering_sweeps(v);
-    filtering_sweeps(w);   
-    correlate_fields(u);
-    correlate_fields(v);
-    correlate_fields(w); 
-    apply_RST_scaling(); 
-
-    display_data(u.fluc);
-        
-    string filename = "../files/cpp_vel_fluc.dat";
-    write_tecplot(filename);
-}
-
-/**
- *  This function is used for testing purposes. It can be used to test the functionality of the DIGITAL_FILTER class.
- */
-void DIGITAL_FILTER::test() {
-
-
-    // generate_white_noise();
-    // filtering_sweeps();
-    // correlate_fields_ts1();
-
-    // // Write fluctuations to a file.
-    // string filename = "velocity_fluc_contour_plot.dat";
-    // write_tecplot(filename);
-
-    // filename = "velocity_fluc_line_plot.dat";
-    // write_tecplot_line(filename);
-}
-
-/**
- *  This function finds the mean and variance of a vector and displays them. It was used to double check the RNG. 
- */
-void DIGITAL_FILTER::find_mean_variance(Vector& v) {
-    double mean_sum = 0.0, var_sum = 0.0;
-
-    for (int i = 0; i < n_cells; ++i) {
-        mean_sum += v[i];
-    }
-
-    double mean = mean_sum / n_cells;
-
-    for (int i = 0; i < n_cells; ++i) {
-        var_sum += (v[i] - mean) * (v[i] - mean);
-    }
-
-    double variance = var_sum / n_cells;
-
-    cout << "Mean: " << mean << "\t Variance: " << variance << endl;
-}
-
-/**
- *  This function displays the data in the vector. It is used for debugging purposes.
- */
-void DIGITAL_FILTER::display_data(Vector& v) {
-    for (auto val : v) {
-        std::cout << val << std::endl;
-    }
-}
-
-/**
- *  This function reads the velocity fluctuation data from a file and calculates the Reynolds stress tensor R_ij. 
- *  It currently uses a number of turbulent boundary layer approximations to estimate the skin friction coefficient 
- *  and the friction velocity. The data is taken from a DNS paper and rescaled to the inflow conditions. It is only 
- *  called once in the constructor to initialize the R_ij tensor.
- */
 void DIGITAL_FILTER::get_RST() {
     
     // Open the velocity fluctuation file.
@@ -544,88 +288,235 @@ void DIGITAL_FILTER::get_RST() {
     d_v = 0.0002 * d_i;     // This will need to be chaged.
 }
 
-/**
- *  This function writes the velocity fluctuations to a Tecplot file for visualization. It writes the z, y, u_fluc, 
- *  v_fluc, and w_fluc data. @param filename is the name of the file to write to.
- */
-void DIGITAL_FILTER::write_tecplot(const string &filename) {
+void DIGITAL_FILTER::generate_white_noise() {
 
-    ofstream file(filename);
-    file << "VARIABLES = \"z\", \"y\", \"u_fluc\", \"v_fluc\", \"w_fluc\" \n";
-    file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
-    file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
+    static pcg32 rng{random_device{}()}; 
+    static normal_distribution<> dist(0.0, 1.0);
 
-
-// Loop over y (rows) and z (columns)
-    for (int j = 0; j < Ny + 1; ++j) {
-            for (int k = 0; k < Nz + 1; ++k) {
-            int idx = j * (Nz + 1) + k;  // row-major: y-major
-            file << z[idx] << endl;
+    auto fill_with_normals = [&](auto &vec) {
+        for (auto &val : vec) {
+            val = dist(rng);
         }
-    }
+    };
 
-
-    for (int j = 0; j < Ny + 1; ++j) {
-        for (int k = 0; k < Nz + 1; ++k) {
-            int idx = j * (Nz + 1) + k;  // row-major: y-major
-            file << y[idx] << endl;
-        }
-    }
-
-
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;  // row-major: y-major
-            file << u.fluc[idx] << endl;
-        }
-    }
-
-
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;  // row-major: y-major
-            file << v.fluc[idx] << endl;
-        }
-    }
-
-
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;  // row-major: y-major
-            file << w.fluc[idx] << endl;
-        }
-    }
-
-    file.close();
-    cout << "Finished plotting." << endl;
+    fill_with_normals(u.r_ys);
+    fill_with_normals(u.r_zs);
+    fill_with_normals(v.r_ys);
+    fill_with_normals(v.r_zs);
+    fill_with_normals(w.r_ys);
+    fill_with_normals(w.r_zs);
 }
 
-/**
- * This function writes the velocity fluctuations at a fixed z-slice to a Tecplot file for visualization.
- */
-void DIGITAL_FILTER::write_tecplot_line(const string &filename) {
-    ofstream file(filename);
+void DIGITAL_FILTER::filtering_sweeps(FilterField& F) {
 
-    int Z = static_cast<int>(Nz / 2);
+    int r_idy, r_idz, idx;
+    double sum;
 
-    file << "VARIABLES = \"y\", \"u_fluc\", \"v_fluc\", \"w_fluc\"\n";
-    file << "ZONE T=\"Line at z=" << Z << "\", I=" << Ny << ", F=POINT\n";
-    file << "VARLOCATION=([2-4]=CELLCENTERED)\n";
+    int Nz_pad = F.Nz_max;
+    int Ny_pad = F.Ny_max;
 
-    // Loop over y (rows) at fixed z = k_slice
+    // Filter in y-direction. 
     for (int j = 0; j < Ny; ++j) {
-        int idx = j * Nz + Z;  // index in 1D row-major array
-        file << y[j * (Nz + 1) + Z] << " "   // y-coordinate
-             << u.fluc[idx] << " "
-             << v.fluc[idx] << " "
-             << w.fluc[idx] << endl;
+
+        r_idy = (j + Ny_pad) * Nz;
+        r_idz = j * (Nz + 2 * Nz_pad) + Nz_pad;
+        idx = j * Nz;   
+
+        for (int k = 0; k < Nz; ++k) {
+
+            sum = 0.0;
+            for (int i = -F.N_ys[idx]; i < F.N_ys[idx]; ++i) {
+                sum += F.by[F.by_offsets[idx] + i] * F.r_ys[r_idy + i * Nz];
+            }
+
+            F.r_zs[r_idz] = sum; 
+
+            r_idy++;                // Index for r block in y-direction
+            r_idz++;                // Index for r block in z-direction
+            idx++;
+        }
     }
 
-    file.close();
-    cout << "Finished plotting line at z = " << Z << "." << endl;
+    // Filter in z-direction.
+    for (int j = 0; j < Ny; ++j) {
+
+        r_idz = j * (Nz + 2 * Nz_pad) + Nz_pad;
+        idx = j * Nz;
+
+        for (int k = 0; k < Nz; ++k) {
+
+            sum = 0.0;
+            for (int i = -F.N_zs[idx]; i < F.N_zs[idx]; ++i) {
+                sum += F.bz[F.bz_offsets[idx] + i] * F.r_zs[r_idz + i]; 
+            }
+
+            F.filt[idx] = sum;
+            r_idz++;
+            idx++;
+        }
+    }
 }
 
-// Main function to calculate and plot the RMS of the velocity fluctuations.
+void DIGITAL_FILTER::correlate_fields(FilterField& F) {
+    
+    double b;
+    double pi = 3.141592654;
+
+    for (int idx = 0; idx < n_cells; ++idx) {
+        F.filt[idx] = F.filt_old[idx] * exp(-pi * dt / (2.0 * F.Lt)) + F.filt[idx] * sqrt(1.0 - exp(-pi * dt / F.Lt));
+    }
+
+    set_old();
+}
+
+void DIGITAL_FILTER::apply_RST_scaling() {
+    
+    double b;
+    double max = 0.0;
+    
+    for (int j = 0; j < Ny; ++j) {
+
+        if (R11[j] < 1e-10) {
+            b = 0.0;
+        }       
+        else {
+            b = R21[j] / sqrt(R11[j]); 
+        } 
+
+        int idx = j * Nz;
+
+        for (int k = 0; k < Nz; ++k) {         
+
+            u.fluc[idx] = sqrt(R11[j]) * u.filt[idx];
+            v.fluc[idx] = b * u.filt[idx] + sqrt(R22[j] - b * b) * v.filt[idx];
+            w.fluc[idx] = sqrt(R33[j]) * w.filt[idx];
+
+            idx++;
+
+        }
+    }   
+
+    set_old();
+}
+
+void DIGITAL_FILTER::filter(double dt_input) {
+
+    dt = dt_input;
+    auto start = NOW;
+    generate_white_noise(); 
+
+    filtering_sweeps(u);
+    filtering_sweeps(v);
+    filtering_sweeps(w);  
+
+    correlate_fields(u);
+    correlate_fields(v);
+    correlate_fields(w);
+
+    apply_RST_scaling(); 
+    auto end = NOW;
+    auto elapsed = chrono::duration<double>(end - start);
+    cout << "Filtering took " << elapsed.count() << " seconds." << endl;
+    
+    string filename = "../files/cpp_vel_fluc.dat";
+    write_tecplot(filename);
+}
+
+void DIGITAL_FILTER::get_rho_T_fluc() {
+    for (int j = 0; j < Ny; ++j) {
+
+        double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j];
+
+        for (int k = 0; k < Nz; ++k) {            
+
+            double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j] * u.fluc[j * Nz + k];
+
+            T_fluc[j * Nz + k] = val * u.fluc[j * Nz + k];
+            rho_fluc[j * Nz + k] = -val * u.fluc[j * Nz + k] / Ty[j] * rhoy[j]; 
+
+        }
+    }
+}
+
+void DIGITAL_FILTER::set_old() {
+
+    for (int idx = 0; idx < n_cells; ++idx) { 
+        u.filt_old[idx] = u.filt[idx];
+        v.filt_old[idx] = v.filt[idx];
+        w.filt_old[idx] = w.filt[idx];        
+    }
+
+}
+
+
+// ========: Debugging functions : ========
+
+void DIGITAL_FILTER::test() {
+
+
+    // generate_white_noise();
+    // filtering_sweeps();
+    // correlate_fields_ts1();
+
+    // // Write fluctuations to a file.
+    // string filename = "velocity_fluc_contour_plot.dat";
+    // write_tecplot(filename);
+
+    // filename = "velocity_fluc_line_plot.dat";
+    // write_tecplot_line(filename);
+}
+
+void DIGITAL_FILTER::display_data(Vector& v) {
+    for (auto val : v) {
+        std::cout << val << std::endl;
+    }
+}
+
+void DIGITAL_FILTER::find_mean_variance(Vector& v) {
+    double mean_sum = 0.0, var_sum = 0.0;
+
+    for (int i = 0; i < n_cells; ++i) {
+        mean_sum += v[i];
+    }
+
+    double mean = mean_sum / n_cells;
+
+    for (int i = 0; i < n_cells; ++i) {
+        var_sum += (v[i] - mean) * (v[i] - mean);
+    }
+
+    double variance = var_sum / n_cells;
+
+    cout << "Mean: " << mean << "\t Variance: " << variance << endl;
+}
+
+void DIGITAL_FILTER::rho_y_test() {
+    rhoy = Vector(Ny, 0.0);
+    for (int j = 0; j < Ny; ++j) {
+        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.6);
+    }
+}
+
+
+
+// ========: RMS functions :=========
+
+void DIGITAL_FILTER::allocate_rms_structures(FilterField F) {
+    F.rms_added = Vector(n_cells, 0.0);
+    F.rms = Vector(n_cells, 0.0);
+}
+
+void DIGITAL_FILTER::rms_add()  {
+    
+    rms_counter++;
+
+    for (int i = 0; i < n_cells; ++i) {
+        u.rms_added[i] +=  u.fluc[i] * u.fluc[i];
+        v.rms_added[i] +=  v.fluc[i] * v.fluc[i];
+        w.rms_added[i] +=  w.fluc[i] * w.fluc[i];
+    }    
+}
+
 void DIGITAL_FILTER::get_rms()  {
     
     allocate_rms_structures(u);
@@ -648,19 +539,6 @@ void DIGITAL_FILTER::get_rms()  {
     plot_rms();
 }
 
-// This function adds the squares of the fluctuations to the RMS accumulators.
-void DIGITAL_FILTER::rms_add()  {
-    
-    rms_counter++;
-
-    for (int i = 0; i < n_cells; ++i) {
-        u.rms_added[i] +=  u.fluc[i] * u.fluc[i];
-        v.rms_added[i] +=  v.fluc[i] * v.fluc[i];
-        w.rms_added[i] +=  w.fluc[i] * w.fluc[i];
-    }    
-}
-
-// This function calculates the RMS of the velocity fluctuations and writes them to a file for visualization.
 void DIGITAL_FILTER::plot_rms() {
 
     for (int i = 0; i < n_cells; ++i) {
@@ -721,3 +599,57 @@ void DIGITAL_FILTER::plot_rms() {
     cout << "Finished plotting." << endl;
 }
 
+
+// ========: Plotting functions :=========
+
+void DIGITAL_FILTER::write_tecplot(const string &filename) {
+
+    ofstream file(filename);
+    file << "VARIABLES = \"z\", \"y\", \"u_fluc\", \"v_fluc\", \"w_fluc\" \n";
+    file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
+    file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
+
+
+// Loop over y (rows) and z (columns)
+    for (int j = 0; j < Ny + 1; ++j) {
+            for (int k = 0; k < Nz + 1; ++k) {
+            int idx = j * (Nz + 1) + k;  // row-major: y-major
+            file << z[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny + 1; ++j) {
+        for (int k = 0; k < Nz + 1; ++k) {
+            int idx = j * (Nz + 1) + k;  // row-major: y-major
+            file << y[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << u.fluc[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << v.fluc[idx] << endl;
+        }
+    }
+
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            int idx = j * Nz + k;  // row-major: y-major
+            file << w.fluc[idx] << endl;
+        }
+    }
+
+    file.close();
+    cout << "Finished plotting." << endl;
+}

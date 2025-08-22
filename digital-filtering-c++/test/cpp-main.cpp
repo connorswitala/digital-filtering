@@ -3,7 +3,7 @@
 int main() {
 
     // Create configuration struct
-    df_config config;
+    DFConfig config;
 
     // Configuration variables. 
     config.grid_file = "grid_file_here";
@@ -13,14 +13,12 @@ int main() {
     config.mu_e = 1.8e-5;
     config.d_i = 0.0013;
     config.vel_file_offset = 142;
-    config.vel_file_N_values = 330;
-  
+    config.vel_file_N_values = 330;  
 
     // Constructor
     DIGITAL_FILTER df(config);
 
     // Call filter procudure with timestep
-
     double dt = 1e-5;
     df.filter(dt);
 

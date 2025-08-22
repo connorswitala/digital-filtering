@@ -12,11 +12,14 @@
 #include "../pcg-cpp/include/pcg_random.hpp"
 
 #define NOW chrono::high_resolution_clock::now(); // This is a macro to get the current time.
-constexpr double pi_c = -2 * 3.14159265358979323846; // This is a constant used in finding the filter coefficients.
+constexpr double pi_c = -2.0 * 3.14159265358979323846; // This is a constant used in finding the filter coefficients.
 
 using namespace std;
 typedef vector<double> Vector;
 
+//  FilterField is a struct that contains all necessary 
+//  data structures for filring the velocity fluctuations.
+//  There is one for each velocity component, u, v, and w.
 struct FilterField {
     Vector  by, bz, 
             r_ys, r_zs,
@@ -28,12 +31,23 @@ struct FilterField {
     double Iz_inn, Iz_out, Lt;
     int Nz_max, Ny_max; 
 };
-struct df_config {
-    double d_i, rho_e, U_e, mu_e;
-    int vel_file_offset, vel_file_N_values;
-    string grid_file, vel_fluc_file;
+
+// DFConfig is a structure that contains all the inputs necessary
+// to use digital filtering.
+struct DFConfig {
+    double  d_i,    // Inlet delta (boundary layer height)
+            rho_e,  // Freestream density
+            U_e,    // Freestream velocity 
+            mu_e;   // Freestream viscosity
+
+    int vel_file_offset,    // Number of header lines in fluctuation file
+        vel_file_N_values;  // Number of fluctuation data points
+
+    string  grid_file,      // Name of grid file (might be deprecated)
+            vel_fluc_file;  // Name of fluctuation file
 };
 
+// Digital_Filter class
 class DIGITAL_FILTER {
 
     private:
@@ -43,73 +57,54 @@ class DIGITAL_FILTER {
     int vel_file_offset;        // Number of lines to skip in fluctuation header file
     int vel_file_N_values;      // Number of lines to read in fluctuation file
 
-    int Ny, Nz, n_cells;        // Storage for CFD domain without ghost cells.
-    double rand1, rand2;        // Intermediate storage for white-noise random number generator.
+    int Ny, Nz, n_cells;        // Storage for CFD domain.
     double d_i, d_v;            // Inlet boundary layer height and viscous length scale. 
     double rho_e, U_e, mu_e;    // Freestream flow parameters
     Vector rhoy, Uy, My, Ty;    // Mean distribution of flow variable in wall normal direction.
-    double mu_wall;             // Wall viscosity
 
-    Vector rho_fluc, T_fluc;
-    Vector R11, R21, R22, R33;                  // Reynolds stress terms
+    Vector rho_fluc, T_fluc;    // Thermodynamic fluctuations
+    Vector R11, R21, R22, R33;  // Reynolds stress terms
 
-    int rms_counter;
-    double dt;
-
-    /**
-     *  The following vector has a size of 6. N_holder[0] holds Nz_max for u', 
-     *  N_holder[1] holds Ny_max for u'. The next 4 are for v' and w' Nz_max
-     *  is even number indices [0, 2, 4] and Ny_max  is odd [1, 3, 5].
-     */
-    vector<int> N_holder; 
+    int rms_counter;            // Counter to find mean of fluctuations
+    double dt;                  // Input dt for filtering
 
     Vector y, yc, z, dy, dz;    // Geometry data
-
-    // Coefficient of integral length scales
-    double Iz_inn, Iz_out; 
-    Vector Iy, Iz;
 
     public:
 
     FilterField u, v, w; 
 
-    DIGITAL_FILTER(df_config config);
+    DIGITAL_FILTER(DFConfig config);
 
-    void allocate_data_structures(FilterField& F);          // Allocates data structures for the filter.
+    // =====: Filtering functions :=====
+    void read_grid();                                   // Fills geometry data structures and find vector sizes
+    void allocate_data_structures(FilterField& F);      // Allocates data structures for the filter.
+    void calculate_filter_properties(FilterField& F);   // Calculates filter properties
+    void get_RST();                                     // Reads in fluctuation file and calculates RST
+    void generate_white_noise();                        // Generates white noise with mean = 0 and variance of 1
+    void filtering_sweeps(FilterField& F);              // Filters the velocity fluctuations in y and z sweeps.
+    void correlate_fields(FilterField& F);              // Correlates new fluctuations from old ones
+    void apply_RST_scaling();                           // Scales fluctuations by RST
+    void filter(double dt_input);                       // Runs all the filtering processes and updates the fluctuations.
+    void get_rho_T_fluc();                              // Calculates the fluctuations for temperature and density.
+    void set_old();                                     // Sets the old fluctuations to the new ones. 
 
-    void generate_white_noise();                // Generates white noise for the filtering.
-    void calculate_filter_properties(FilterField& F);         // Calculates filter properties for the filtering.
-    void correlate_fields(FilterField& F);                    // Correlates new fluctuations from old ones and then scales using RST.
-    void apply_RST_scaling();                // Used for t = 0 and only scales with RST.
-    void filtering_sweeps(FilterField& F);                    // Filters the velocity fluctuations in y and z sweeps.
-    void filter(double dt_input);               // Runs all the filtering processes and updates the fluctuations.
-    void get_rho_T_fluc();                      // Calculates the fluctuations for temperature and density.
-    void set_old();                             // Sets the old fluctuations to the new ones. 
-    void test();                                // Used for testing purposes.        
-    void display_data(Vector& v);               // Displays the data in the vector.
-    void find_mean_variance(Vector& v);         // Finds the mean and variance of the vector.
-    
+    // ====: Debugging functions :=====
+    //  (to be removed when finished)
+    void test();                                        // Used for testing purposes.        
+    void display_data(Vector& v);                       // Displays the data in the vector.
+    void find_mean_variance(Vector& v);                 // Finds the mean and variance of the vector.
+    void rho_y_test();                                  // Test wall-normal density distribution 
 
 
-    void allocate_rms_structures(FilterField F); // Allocates data structures for the RMS values.
-    void rms_add();
-    void get_rms();
-    void plot_rms(); 
+    // =====: RMS functions :=====
+    //  (to be removed when finished)
+    void allocate_rms_structures(FilterField F);        // Allocates data structures for the RMS values.
+    void rms_add();                                     // Adds square of fluctuations to rms sum every timestep
+    void get_rms();                                     // Function designed to be called on its own
+    void plot_rms();                                    // Plots RMS data for u', v', and w'
 
-    /** 
-     *  The following function opens a file that contains rms values for u', w', and w' that are normalized by the Morokovin
-     *  velocity scale u* = u_tau * sqrt(rho_w / rho(y)). It then multiplies these values by a turbulent boundary layer estimate
-     *  for wall shear stress depending on an estimate turbulent skin friction coefficient and for Re_x using the inlet boundary 
-     *  layer height, d_i. Once the fluctuations are calculated, it find the reynolds stresses R11, R21, R22, and R33 for each 
-     *  cell to be used when scaling the fluctuations.
-     */
-    void get_RST();   
-
-    void rho_y_test(); // This function creates a test distribution of density in the wall-normal direction to be used with Morkovin scaling.
-             
-    void read_grid(); // This function reads the grid from a file and populates the y, yc, z, dy, dz vectors.
-
-    // The following functions write the data to a file in Tecplot format to visualze the distubution of the fluctuations.
-    void write_tecplot(const string &filename);
-    void write_tecplot_line(const string &filename);
+    // =====: Plotting functions : =====
+    //  (to be removed when finished)
+    void write_tecplot(const string &filename);         // Plots fluctuations
 };
