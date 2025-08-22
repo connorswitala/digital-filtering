@@ -17,7 +17,17 @@ constexpr double pi_c = -2 * 3.14159265358979323846; // This is a constant used 
 using namespace std;
 typedef vector<double> Vector;
 
+struct FilterField {
+    Vector  by, bz, 
+            r_ys, r_zs,
+            rms_added, rms, 
+            filt_old, filt, fluc;
 
+    vector<int> N_ys, N_zs,
+                by_offsets, bz_offsets;
+    double Iz_inn, Iz_out, Lt;
+    int Nz_max, Ny_max; 
+};
 struct df_config {
     double d_i, rho_e, U_e, mu_e;
     int vel_file_offset, vel_file_N_values;
@@ -34,32 +44,16 @@ class DIGITAL_FILTER {
     int vel_file_N_values;      // Number of lines to read in fluctuation file
 
     int Ny, Nz, n_cells;        // Storage for CFD domain without ghost cells.
-    int Ny_max, Nz_max;         // Intermediate storage to find filter widths.
     double rand1, rand2;        // Intermediate storage for white-noise random number generator.
     double d_i, d_v;            // Inlet boundary layer height and viscous length scale. 
     double rho_e, U_e, mu_e;    // Freestream flow parameters
     Vector rhoy, Uy, My, Ty;    // Mean distribution of flow variable in wall normal direction.
     double mu_wall;             // Wall viscosity
 
-    Vector ru_ys, rv_ys, rw_ys;         // Data structures for random numbers in y_sweep filtering. 
-    Vector ru_zs, rv_zs, rw_zs;         // Data structures for random numbers in z_sweep filtering.
-    vector<int> Nu_ys, Nv_ys, Nw_ys;    // Data structures to hold filter half-widths for each CFD cell in y-sweep.
-    vector<int> Nu_zs, Nv_zs, Nw_zs;    // Data structures to hold filter half-widths for each CFD cell in z-sweep.
-
-    Vector bu_y, bv_y, bw_y;    // Data structures for filter coefficients in y-sweep.
-    Vector bu_z, bv_z, bw_z;    // Data structures for filter coefficients in y-sweep.
-    Vector buy_offsets, buz_offsets, bvy_offsets, bvz_offsets, bwy_offsets, bwz_offsets;
-
-
     Vector rho_fluc, T_fluc;
-    Vector u_fluc, v_fluc, w_fluc;              // Data structures for final filtered velocity fluctuations.
-    Vector u_filt, v_filt, w_filt;              // Data structures to hold new fluctuations. 
-    Vector u_filt_old, v_filt_old, w_filt_old;  // Data structures to hold old fluctuations.
     Vector R11, R21, R22, R33;                  // Reynolds stress terms
 
     int rms_counter;
-    Vector urms_added, urms, vrms_added, vrms, wrms_added, wrms;
-
     double dt;
 
     /**
@@ -72,24 +66,32 @@ class DIGITAL_FILTER {
     Vector y, yc, z, dy, dz;    // Geometry data
 
     // Coefficient of integral length scales
-    double Iz_inn, Iz_out;  
+    double Iz_inn, Iz_out; 
     Vector Iy, Iz;
 
     public:
 
+    FilterField u, v, w; 
+
     DIGITAL_FILTER(df_config config);
 
+    void allocate_data_structures(FilterField& F);          // Allocates data structures for the filter.
+
     void generate_white_noise();                // Generates white noise for the filtering.
-    void calculate_filter_properties();         // Calculates filter properties for the filtering.
-    void correlate_fields();                    // Correlates new fluctuations from old ones and then scales using RST.
-    void correlate_fields_ts1();                // Used for t = 0 and only scales with RST.
-    void filtering_sweeps();                    // Filters the velocity fluctuations in y and z sweeps.
+    void calculate_filter_properties(FilterField& F);         // Calculates filter properties for the filtering.
+    void correlate_fields(FilterField& F);                    // Correlates new fluctuations from old ones and then scales using RST.
+    void apply_RST_scaling();                // Used for t = 0 and only scales with RST.
+    void filtering_sweeps(FilterField& F);                    // Filters the velocity fluctuations in y and z sweeps.
     void filter(double dt_input);               // Runs all the filtering processes and updates the fluctuations.
     void get_rho_T_fluc();                      // Calculates the fluctuations for temperature and density.
     void set_old();                             // Sets the old fluctuations to the new ones. 
     void test();                                // Used for testing purposes.        
     void display_data(Vector& v);               // Displays the data in the vector.
     void find_mean_variance(Vector& v);         // Finds the mean and variance of the vector.
+    
+
+
+    void allocate_rms_structures(FilterField F); // Allocates data structures for the RMS values.
     void rms_add();
     void get_rms();
     void plot_rms(); 
