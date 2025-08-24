@@ -20,9 +20,9 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
     get_RST();          // Initializes the Reynold-stress tensor terms
 
     // Allocate data structures for the filter fields.
-    allocate_data_structures(u);
-    allocate_data_structures(v);
-    allocate_data_structures(w);
+    for (FilterField* F : {&u, &v, &w}) {
+        allocate_data_structures(*F);
+    }
 
     // Integral length scales
     u.Iz_out = 0.4 * d_i;
@@ -45,16 +45,18 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
     T_fluc = Vector(n_cells);
 
     // Initialize coefficients and filter half-widths. 
-    calculate_filter_properties(u); 
-    calculate_filter_properties(v);
-    calculate_filter_properties(w);
+    for (FilterField* F : {&u, &v, &w}) {
+        calculate_filter_properties(*F);
+    }
+    
 
     // First timestep filtering.
 
     generate_white_noise();
-    filtering_sweeps(u);
-    filtering_sweeps(v);
-    filtering_sweeps(w);
+    for (FilterField* F : {&u, &v, &w}) {
+        filtering_sweeps(*F);
+    }
+
     apply_RST_scaling();
 
     // get_rho_T_fluc(); 
@@ -120,7 +122,7 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
 
     double n_int, sum, val, Iy; 
     int N, n_val, b_size, offset;
-    Vector Iz(n_cells);
+    Vector Iz(n_cells), temp;
 
     //===================================================================================================
     // Find filter half-width and convolution coefficients for velocity when filtering in the z-direction
@@ -145,6 +147,7 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
     // Allocate space for random data and filter coefficient arrays
     F.r_zs = Vector( (Nz + 2 * F.Nz_max) * Ny);
     F.bz = Vector(b_size);
+    temp = Vector(F.Nz_max + 1);
 
     for (int idx = 0; idx < n_cells; ++idx) {
    
@@ -153,15 +156,15 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
 
         sum = 0.0;
         // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-        for (int i = -N; i <= N; ++i) {                     
-            val = exp(pi_c * abs(i) / N);     
-            sum += val *val;
+        for (int i = 0; i <= N; ++i) {                     
+            temp[i] = exp(pi_c * abs(i) / N);     
+            sum += (i==0 ? 1.0 : 2.0) * temp[i] * temp[i];;
         }
         sum = sqrt(sum);
 
         // Loop through and calculate final vector of filter coefficients.
         for (int i = -N; i <= N; ++i) {                 
-            F.bz[offset + i] = exp(pi_c * abs(i) / N) / sum; 
+            F.bz[offset + i] = temp[abs(i)] / sum; 
         }
     }            
 
@@ -184,23 +187,23 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
 
     F.r_ys = Vector(Nz * (2 * F.Ny_max + Ny)); // Allocate space for random data in y-sweep.
     F.by = Vector(b_size); // Allocate space for filter coefficients in y-sweep.
-    // Allocate space for random data and filter coefficient arrays.
-   
+    temp = Vector(F.Ny_max + 1);
+
     for (int idx = 0; idx < n_cells; ++idx) {
         sum = 0.0;
         N = F.N_ys[idx];
         offset = F.by_offsets[idx];
 
         // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-        for (int i = -N; i <= N; ++i) {                     
-            val = exp(pi_c * abs(i) / N);     
-            sum += val *val;
+        for (int i = 0; i <= N; ++i) {                     
+            temp[i] = exp(pi_c * abs(i) / N);     
+            sum += (i == 0? 1.0 : 2.0) * temp[i] * temp[i];
         }
         sum = sqrt(sum);
 
         // Loop through and calculate final vector of filter coefficients.
         for (int i = -N; i <= N; ++i) {                 
-            F.by[offset + i] = exp(pi_c * abs(i) / N) / sum; 
+            F.by[offset + i] = temp[abs(i)] / sum; 
         }
     }
 }
@@ -367,9 +370,10 @@ void DIGITAL_FILTER::correlate_fields(FilterField& F) {
     
     double b;
     double pi = 3.141592654;
+    double alpha = exp(-pi * dt / F.Lt); 
 
     for (int idx = 0; idx < n_cells; ++idx) {
-        F.filt[idx] = F.filt_old[idx] * exp(-pi * dt / (2.0 * F.Lt)) + F.filt[idx] * sqrt(1.0 - exp(-pi * dt / F.Lt)); 
+        F.filt[idx] = F.filt_old[idx] * sqrt(alpha) + F.filt[idx] * sqrt(1.0 - alpha); 
     }
 }
 
@@ -394,9 +398,9 @@ void DIGITAL_FILTER::apply_RST_scaling() {
             v.fluc[idx] = b * u.filt[idx] + sqrt(R22[j] - b * b) * v.filt[idx];
             w.fluc[idx] = sqrt(R33[j]) * w.filt[idx];
 
-            u.filt_old[idx] = u.filt[idx];
-            v.filt_old[idx] = v.filt[idx];
-            w.filt_old[idx] = w.filt[idx];
+            for (FilterField* F : {&u, &v, &w}) {
+                F->filt_old[idx] = F->filt[idx];
+            }
 
             idx++;
         }
@@ -409,13 +413,10 @@ void DIGITAL_FILTER::filter(double dt_input) {
     auto start = NOW;
     generate_white_noise(); 
 
-    filtering_sweeps(u);
-    filtering_sweeps(v);
-    filtering_sweeps(w);  
-
-    correlate_fields(u);
-    correlate_fields(v);
-    correlate_fields(w);
+    for (FilterField* F : {&u, &v, &w}) {
+        filtering_sweeps(*F);
+        correlate_fields(*F);
+    }
 
     apply_RST_scaling(); 
     auto end = NOW;
