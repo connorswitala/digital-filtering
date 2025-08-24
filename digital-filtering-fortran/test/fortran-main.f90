@@ -6,7 +6,7 @@ program test_df
     real(kind=dp) :: dt
 
     type(digital_filter_type) :: df     ! Create the digital filter
-    type(df_config) :: config           ! Create the configuration for input to construtor function
+    type(DFConfig) :: config           ! Create the configuration for input to construtor function
 
     ! Configuration variables.
     config%d_i = 0.0013_dp
@@ -19,10 +19,10 @@ program test_df
     config%vel_file_N_values = 330
 
     ! Call the constructor
-    df = create_digital_filter(config)
+    DF = create_digital_filter(config)
 
     ! Call the filter with a timestep
     dt = 1e-8_dp
-    call get_rms(df)
+    call filter(df, dt)
 
 end program test_df

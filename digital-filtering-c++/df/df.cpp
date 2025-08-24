@@ -65,7 +65,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
 
 void DIGITAL_FILTER::read_grid() {
 
-    Nz = 30;
+    Nz = 400;
     Ny = vel_file_N_values;
     n_cells = Nz * Ny;
 
@@ -119,7 +119,7 @@ void DIGITAL_FILTER::allocate_data_structures(FilterField& F) {
 void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
 
     double n_int, sum, val, Iy; 
-    int N, n_val, b_size;
+    int N, n_val, b_size, offset;
     Vector Iz(n_cells);
 
     //===================================================================================================
@@ -138,7 +138,7 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
         F.N_zs[idx] = n_val;
 
         b_size += 2 * n_val + 1;
-        F.bz_offsets[idx] = b_size - n_val;
+        F.bz_offsets[idx] = b_size - n_val - 1;
         if (n_val > F.Nz_max) F.Nz_max = n_val;
     }
 
@@ -147,19 +147,21 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
     F.bz = Vector(b_size);
 
     for (int idx = 0; idx < n_cells; ++idx) {
-        sum = 0.0;
+   
         N = F.N_zs[idx];
+        offset = F.bz_offsets[idx];
 
+        sum = 0.0;
         // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-        for (int i = -N; i < N; ++i) {                     
+        for (int i = -N; i <= N; ++i) {                     
             val = exp(pi_c * abs(i) / N);     
             sum += val *val;
         }
         sum = sqrt(sum);
 
         // Loop through and calculate final vector of filter coefficients.
-        for (int i = -N; i < N; ++i) {                 
-            F.bz[F.bz_offsets[idx] + i] = exp(pi_c * abs(i) / N) / sum; 
+        for (int i = -N; i <= N; ++i) {                 
+            F.bz[offset + i] = exp(pi_c * abs(i) / N) / sum; 
         }
     }            
 
@@ -175,7 +177,7 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
         n_val = 2 * static_cast<int>(n_int);
 
         b_size += 2 * n_val + 1;
-        F.by_offsets[idx] = b_size - n_val;
+        F.by_offsets[idx] = b_size - n_val - 1;
         F.N_ys[idx] = n_val;
         if (n_val > F.Ny_max) F.Ny_max = n_val;
     }
@@ -187,17 +189,18 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
     for (int idx = 0; idx < n_cells; ++idx) {
         sum = 0.0;
         N = F.N_ys[idx];
+        offset = F.by_offsets[idx];
 
         // Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-        for (int i = -N; i < N; ++i) {                     
+        for (int i = -N; i <= N; ++i) {                     
             val = exp(pi_c * abs(i) / N);     
             sum += val *val;
         }
         sum = sqrt(sum);
 
         // Loop through and calculate final vector of filter coefficients.
-        for (int i = -N; i < N; ++i) {                 
-            F.by[F.by_offsets[idx] + i] = exp(pi_c * abs(i) / N) / sum; 
+        for (int i = -N; i <= N; ++i) {                 
+            F.by[offset + i] = exp(pi_c * abs(i) / N) / sum; 
         }
     }
 }
@@ -253,15 +256,11 @@ void DIGITAL_FILTER::get_RST() {
 
     val = d_i / 0.37 * pow(Re, 1.0/5.0);
     x_est = pow(val, 5.0/4.0);                              // Estimated x-location from inflow delta.
-    cout << "x_est = " << x_est << endl;
-    
+
     double Cf = 0.0576 / pow(Re * x_est, 1.0/5.0);          // Estimate skin friction coefficient using Prandtl's one-seventh-power law.
     double tau_w = 33.6;                                    // Skin friction
     double u_tau = sqrt(tau_w / 0.0264);
     
-    cout << "C_f = " << Cf << endl;
-    cout << "tau_w = " << tau_w << endl;
-    cout << "u_tau = " << u_tau << endl;
     Vector u_rms(vel_file_N_values), v_rms(vel_file_N_values), w_rms(vel_file_N_values), uv_rms(vel_file_N_values); 
 
     // Scale u'_rms / u* to inflow u*
@@ -309,7 +308,7 @@ void DIGITAL_FILTER::generate_white_noise() {
 
 void DIGITAL_FILTER::filtering_sweeps(FilterField& F) {
 
-    int r_idy, r_idz, idx;
+    int r_idy, r_idz, idx, offset, N;
     double sum;
 
     int Nz_pad = F.Nz_max;
@@ -321,12 +320,16 @@ void DIGITAL_FILTER::filtering_sweeps(FilterField& F) {
         r_idy = (j + Ny_pad) * Nz;
         r_idz = j * (Nz + 2 * Nz_pad) + Nz_pad;
         idx = j * Nz;   
+        
 
         for (int k = 0; k < Nz; ++k) {
 
+            offset = F.by_offsets[idx];
+            N = F.N_ys[idx];
+
             sum = 0.0;
-            for (int i = -F.N_ys[idx]; i < F.N_ys[idx]; ++i) {
-                sum += F.by[F.by_offsets[idx] + i] * F.r_ys[r_idy + i * Nz];
+            for (int i = -N; i <= N; ++i) {
+                sum += F.by[offset + i] * F.r_ys[r_idy + i * Nz];
             }
 
             F.r_zs[r_idz] = sum; 
@@ -344,10 +347,13 @@ void DIGITAL_FILTER::filtering_sweeps(FilterField& F) {
         idx = j * Nz;
 
         for (int k = 0; k < Nz; ++k) {
+            
+            offset = F.bz_offsets[idx];
+            N = F.N_zs[idx];
 
             sum = 0.0;
-            for (int i = -F.N_zs[idx]; i < F.N_zs[idx]; ++i) {
-                sum += F.bz[F.bz_offsets[idx] + i] * F.r_zs[r_idz + i]; 
+            for (int i = -N; i <= N; ++i) {
+                sum += F.bz[offset + i] * F.r_zs[r_idz + i]; 
             }
 
             F.filt[idx] = sum;
@@ -363,16 +369,13 @@ void DIGITAL_FILTER::correlate_fields(FilterField& F) {
     double pi = 3.141592654;
 
     for (int idx = 0; idx < n_cells; ++idx) {
-        F.filt[idx] = F.filt_old[idx] * exp(-pi * dt / (2.0 * F.Lt)) + F.filt[idx] * sqrt(1.0 - exp(-pi * dt / F.Lt));
+        F.filt[idx] = F.filt_old[idx] * exp(-pi * dt / (2.0 * F.Lt)) + F.filt[idx] * sqrt(1.0 - exp(-pi * dt / F.Lt)); 
     }
-
-    set_old();
 }
 
 void DIGITAL_FILTER::apply_RST_scaling() {
     
     double b;
-    double max = 0.0;
     
     for (int j = 0; j < Ny; ++j) {
 
@@ -391,12 +394,13 @@ void DIGITAL_FILTER::apply_RST_scaling() {
             v.fluc[idx] = b * u.filt[idx] + sqrt(R22[j] - b * b) * v.filt[idx];
             w.fluc[idx] = sqrt(R33[j]) * w.filt[idx];
 
-            idx++;
+            u.filt_old[idx] = u.filt[idx];
+            v.filt_old[idx] = v.filt[idx];
+            w.filt_old[idx] = w.filt[idx];
 
+            idx++;
         }
     }   
-
-    set_old();
 }
 
 void DIGITAL_FILTER::filter(double dt_input) {
@@ -438,15 +442,6 @@ void DIGITAL_FILTER::get_rho_T_fluc() {
     }
 }
 
-void DIGITAL_FILTER::set_old() {
-
-    for (int idx = 0; idx < n_cells; ++idx) { 
-        u.filt_old[idx] = u.filt[idx];
-        v.filt_old[idx] = v.filt[idx];
-        w.filt_old[idx] = w.filt[idx];        
-    }
-
-}
 
 
 // ========: Debugging functions : ========

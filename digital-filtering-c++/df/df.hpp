@@ -87,7 +87,6 @@ class DIGITAL_FILTER {
     void apply_RST_scaling();                           // Scales fluctuations by RST
     void filter(double dt_input);                       // Runs all the filtering processes and updates the fluctuations.
     void get_rho_T_fluc();                              // Calculates the fluctuations for temperature and density.
-    void set_old();                                     // Sets the old fluctuations to the new ones. 
 
     // ====: Debugging functions :=====
     //  (to be removed when finished)

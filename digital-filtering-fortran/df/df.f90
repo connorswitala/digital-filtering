@@ -3,10 +3,24 @@
 module DIGITAL_FILTERING
     implicit none
     private
-    public :: digital_filter_type, create_digital_filter, test, filter, df_config, get_rms
+    public :: digital_filter_type, create_digital_filter, filter, DFConfig
 
     INTEGER,PARAMETER :: dp = selected_real_kind(15)
     real(kind=dp), PARAMETER :: pi = acos(-1.0_dp)
+
+    type :: FilterField
+
+        real(kind=dp), allocatable :: fluc(:), filt(:), filt_old(:)
+        real(kind=dp), allocatable :: r_ys(:), r_zs(:)
+        real(kind=dp), allocatable :: by(:), bz(:)
+        real(kind=dp), allocatable :: rms(:), rms_added(:)
+        integer, allocatable :: N_ys(:), N_zs(:)
+        integer, allocatable :: bz_offsets(:), by_offsets(:)
+
+        integer :: Ny_max, Nz_max
+        real(kind=dp) :: Iz_inn, Iz_out, Lt
+
+    end type FilterField
 
     ! Define a type (like a class)
     type :: digital_filter_type
@@ -16,6 +30,8 @@ module DIGITAL_FILTERING
         integer :: vel_file_offset
         integer :: vel_file_N_values
 
+        type(FilterField) :: u, v, w
+
         integer :: Ny, Nz, n_cells
         integer :: Ny_max, Nz_max
         integer :: rms_counter
@@ -24,215 +40,346 @@ module DIGITAL_FILTERING
         real(kind=dp) :: d_i, d_v
         real(kind=dp) :: rho_e, U_e, mu_e
 
-        real(kind=dp), allocatable :: urms_added(:), urms(:), vrms_added(:), vrms(:), wrms_added(:), wrms(:)
-        real(kind=dp), allocatable :: rhoy(:), Uy(:), My(:), Ty(:)
-        real(kind=dp), allocatable :: ru_ys(:), rv_ys(:), rw_ys(:)
-        real(kind=dp), allocatable :: ru_zs(:), rv_zs(:), rw_zs(:)
-        integer, allocatable :: Nu_ys(:), Nv_ys(:), Nw_ys(:)
-        integer, allocatable :: Nu_zs(:), Nv_zs(:), Nw_zs(:)
-        real(kind=dp), allocatable :: bu_y(:), bv_y(:), bw_y(:)
-        real(kind=dp), allocatable :: bu_z(:), bv_z(:), bw_z(:)
-
-        integer, allocatable :: buz_offsets(:), bvz_offsets(:), bwz_offsets(:)
-        integer, allocatable :: buy_offsets(:), bvy_offsets(:), bwy_offsets(:)
-        
         real(kind=dp), allocatable :: rho_fluc(:), T_fluc(:)
-        real(kind=dp), allocatable :: u_fluc(:), v_fluc(:), w_fluc(:)
-        real(kind=dp), allocatable :: u_filt(:), v_filt(:), w_filt(:)
-        real(kind=dp), allocatable :: u_filt_old(:), v_filt_old(:), w_filt_old(:)
+        real(kind=dp), allocatable :: rhoy(:), Uy(:), My(:), Ty(:)
         real(kind=dp), allocatable :: R11(:), R21(:), R22(:), R33(:)
 
         real(kind=dp) :: dt
 
-        integer, allocatable :: N_holder(:)
         real(kind=dp), allocatable :: y(:), yc(:), z(:), dy(:), dz(:)
-        real(kind=dp) :: Iz_inn, Iz_out
-        real(kind=dp), allocatable :: Iy(:), Iz(:)
+
     
     end type digital_filter_type
 
-
-
-    type :: df_config
+    type :: DFConfig
         real(kind=dp) :: d_i, rho_e, U_e, mu_e
         integer :: vel_file_offset, vel_file_N_values
         character(len=256) :: grid_file, vel_fluc_file
-    end type df_config
+    end type DFConfig
 
 contains
 
     !   Constructor subroutine
 
-    function create_digital_filter(config) result(obj)
+    function create_digital_filter(config) result(DF)
         implicit none
-        type(df_config), intent(in) :: config
+        type(DFConfig), intent(in) :: config
         character(len=50) :: filename
-        type(digital_filter_type) :: obj
-        type(digital_filter_type) :: df
+        type(digital_filter_type) :: DF
+        
+        DF%d_i = config%d_i
+        DF%rho_e = config%rho_e
+        DF%U_e = config%U_e
+        DF%mu_e = config%mu_e
+        DF%grid_file = config%grid_file
+        DF%vel_fluc_file = config%vel_fluc_file
+        DF%vel_file_offset = config%vel_file_offset
+        DF%vel_file_N_values = config%vel_file_N_values
 
-        df%d_i = config%d_i
-        df%rho_e = config%rho_e
-        df%U_e = config%U_e
-        df%mu_e = config%mu_e
-        df%grid_file = config%grid_file
-        df%vel_fluc_file = config%vel_fluc_file
-        df%vel_file_offset = config%vel_file_offset
-        df%vel_file_N_values = config%vel_file_N_values
+        DF%rms_counter = 0
 
-        df%rms_counter = 0
+        call read_grid(DF)
+        call rhoy_test(DF)
+        call get_RST(DF)
 
-        call read_grid(df)
-        call rhoy_test(df)
-        call get_RST(df)
+        ! Allocate data structures for u, v, w
+        call allocate_data_structures(DF, DF%u)
+        call allocate_data_structures(DF, DF%v)
+        call allocate_data_structures(DF, DF%w)
 
-        allocate(df%Iy(df%n_cells))
-        allocate(df%Iz(df%n_cells))
-        allocate(df%Nu_ys(df%n_cells))
-        allocate(df%Nu_zs(df%n_cells))
-        allocate(df%Nv_ys(df%n_cells))
-        allocate(df%Nv_zs(df%n_cells))
-        allocate(df%Nw_ys(df%n_cells))
-        allocate(df%Nw_zs(df%n_cells))
-        allocate(df%N_holder(6))
-        allocate(df%u_fluc(df%n_cells))
-        allocate(df%v_fluc(df%n_cells))
-        allocate(df%w_fluc(df%n_cells))
-        allocate(df%u_filt(df%n_cells))
-        allocate(df%v_filt(df%n_cells))
-        allocate(df%w_filt(df%n_cells))
-        allocate(df%u_filt_old(df%n_cells))
-        allocate(df%v_filt_old(df%n_cells))
-        allocate(df%w_filt_old(df%n_cells))
-        allocate(df%buy_offsets(df%n_cells))
-        allocate(df%buz_offsets(df%n_cells))
-        allocate(df%bvy_offsets(df%n_cells))
-        allocate(df%bvz_offsets(df%n_cells))
-        allocate(df%bwy_offsets(df%n_cells))
-        allocate(df%bwz_offsets(df%n_cells))
+        ! Set integral length scales
+        DF%u%Iz_out = 0.4_dp * DF%d_i
+        DF%u%Iz_inn = 150.0_dp * DF%d_v
+        DF%u%Lt = 0.8_dp * DF%d_i / DF%U_e
 
-        allocate(df%urms(df%n_cells))
-        allocate(df%urms_added(df%n_cells))
-        allocate(df%vrms(df%n_cells))
-        allocate(df%vrms_added(df%n_cells))
-        allocate(df%wrms(df%n_cells))
-        allocate(df%wrms_added(df%n_cells))
+        DF%v%Iz_out = 0.3_dp * DF%d_i
+        DF%v%Iz_inn = 75.0_dp * DF%d_v
+        DF%v%Lt = 0.3_dp * DF%d_i / DF%U_e
 
-        allocate(df%My(df%Ny))
-        allocate(df%Uy(df%Ny))
-        allocate(df%Ty(df%Ny))
-        allocate(df%rho_fluc(df%n_cells))
-        allocate(df%T_fluc(df%n_cells))
+        DF%w%Iz_out = 0.4_dp * DF%d_i
+        DF%w%Iz_inn = 150.0_dp * DF%d_v
+        DF%w%Lt = 0.3_dp * DF%d_i / DF%U_e
 
+
+        allocate(DF%My(DF%Ny))
+        allocate(DF%Uy(DF%Ny))
+        allocate(DF%Ty(DF%Ny))
+        allocate(DF%rho_fluc(DF%n_cells))
+        allocate(DF%T_fluc(DF%n_cells))
      
-        call calculate_filter_properties(df)
+        call calculate_filter_properties(DF, DF%u)
+        call calculate_filter_properties(DF, DF%v)
+        call calculate_filter_properties(DF, DF%w)
 
         ! First timestep
-        call generate_white_noise(df)
-        call filtering_sweeps(df)
-        call correlate_fields_ts1(df)
+        call generate_white_noise(DF)
+
+        call filtering_sweeps(DF, DF%u)
+        call filtering_sweeps(DF, DF%v)
+        call filtering_sweeps(DF, DF%w)
+
+        call apply_RST_scaling(DF)
+
         filename = "../files/f_vel_fluc_init.dat"
-        call write_tecplot(df, filename)
+        call write_tecplot(DF, filename)
 
-
-        obj = df
     end function create_digital_filter
 
 
-    !   This subroutine displays the array that is input. Used for bug checking.
+    ! ========: Subroutines for Digital Filter :========
 
-    subroutine display_data(array)
-            implicit none
-            real(kind=dp), intent(in) :: array(:)       ! the array to display
-            integer :: i
-
-            do i = 1, size(array)
-                print *, array(i)
-            end do
-    end subroutine display_data
-
-
-    !   Somehow, this subroutine reads the grid from a file and populates the y, yc, z, dy, dz vectors. 
-    !   I do not know how to go about this part, but I do know that we need to get the vectors y, yc, z,
-    !   dy, dz and intgeres Nz, Ny populated with the data from the file. 
- 
-    subroutine read_grid(df)
+    subroutine read_grid(DF)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
+        type(digital_filter_type), intent(inout) :: DF
         real(kind=dp) :: y_max, eta, a
         integer :: j, jj, k, idx
 
         ! set sizes
-        df%Nz = 30
-        df%Ny = df%vel_file_N_values
-        df%n_cells = df%Nz * df%Ny
+        DF%Nz = 400
+        DF%Ny = DF%vel_file_N_values
+        DF%n_cells = DF%Nz * DF%Ny
 
         !allocate arrays
-        allocate(df%y( (df%Ny + 1) * (df%Nz + 1)))
-        allocate(df%z( (df%Ny + 1) * (df%Nz + 1)))
-        allocate(df%yc( (df%n_cells)))
-        allocate(df%dy( (df%n_cells)))
-        allocate(df%dz( (df%n_cells)))
+        allocate(DF%y( (DF%Ny + 1) * (DF%Nz + 1)))
+        allocate(DF%z( (DF%Ny + 1) * (DF%Nz + 1)))
+        allocate(DF%yc( (DF%n_cells)))
+        allocate(DF%dy( (DF%n_cells)))
+        allocate(DF%dz( (DF%n_cells)))
 
-        y_max = 2 * df%d_i
+        y_max = 2 * DF%d_i
         eta = 0.0_dp
         a = 2.0_dp
         
 
         !--- First loop: y and z
-        do j = df%Ny + 1, 1, -1        ! j decreases: Ny+1 → 1
-            jj = df%Ny + 2 - j          ! jj increases: 1 → Ny+1
-            do k = 1, df%Nz + 1
-                eta = real(j - 1, dp) / real(df%Ny + 1, dp)
+        do j = DF%Ny + 1, 1, -1        ! j decreases: Ny+1 → 1
+            jj = DF%Ny + 2 - j          ! jj increases: 1 → Ny+1
+            do k = 1, DF%Nz + 1
+                eta = real(j - 1, dp) / real(DF%Ny + 1, dp)
 
-                df%y((jj - 1) * (df%Nz + 1) + k) = y_max * (1.0_dp - tanh(a * eta) / tanh(a))
-                df%z((jj - 1) * (df%Nz + 1) + k) = real(k,dp) * 0.000133_dp
+                DF%y((jj - 1) * (DF%Nz + 1) + k) = y_max * (1.0_dp - tanh(a * eta) / tanh(a))
+                DF%z((jj - 1) * (DF%Nz + 1) + k) = real(k,dp) * 0.000133_dp
             end do
-            print *, df%y((jj - 1) * (df%Nz + 1) + 1)
         end do
 
 
         !--- Second loop: dy, dz, yc
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-                df%dy(idx) = df%y((j + 0) * (df%Nz + 1) + k) - df%y((j - 1) * (df%Nz + 1) + k)
-                df%dz(idx) = 0.000133_dp
-                df%yc(idx) = 0.25_dp * ( df%y((j - 1)*(df%Nz + 1) + k) + df%y(j*(df%Nz + 1) + k) &
-                                    + df%y((j - 1)*(df%Nz + 1) + k + 1) + df%y(j*(df%Nz + 1) + k + 1) )
+        do j = 1, DF%Ny
+            do k = 1, DF%Nz
+                idx = (j - 1) * DF%Nz + k
+                DF%dy(idx) = DF%y((j + 0) * (DF%Nz + 1) + k) - DF%y((j - 1) * (DF%Nz + 1) + k)
+                DF%dz(idx) = 0.000133_dp
+                DF%yc(idx) = 0.25_dp * ( DF%y((j - 1)*(DF%Nz + 1) + k) + DF%y(j*(DF%Nz + 1) + k) &
+                                    + DF%y((j - 1)*(DF%Nz + 1) + k + 1) + DF%y(j*(DF%Nz + 1) + k + 1) )
             end do
         end do
     end subroutine read_grid
 
+    subroutine allocate_data_structures(DF, FF) 
+            implicit none
+            type(digital_filter_type), intent(inout) :: DF
+            type(FilterField), intent(inout) :: FF
 
-    !   This subroutine is used to test the rho_y vector.
+            allocate(FF%fluc(DF%n_cells))
+            allocate(FF%filt(DF%n_cells))
+            allocate(FF%filt_old(DF%n_cells))
+            allocate(FF%N_ys(DF%n_cells))
+            allocate(FF%N_zs(DF%n_cells))
+            allocate(FF%by_offsets(DF%n_cells))
+            allocate(FF%bz_offsets(DF%n_cells))
 
-    subroutine rhoy_test(df)
+    end subroutine allocate_data_structures
+
+    subroutine calculate_filter_properties(DF, FF)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
-        integer j
+        type(digital_filter_type), intent(inout) :: DF
+        type(FilterField), intent(inout) :: FF
+        integer :: i, idx, N, n_val, b_size, offset
+        real(kind=dp) :: n_int, sum, val, Iy 
+        real(kind=dp), allocatable :: Iz(:)
 
-        allocate(df%rhoy(df%Ny))       
+        allocate(Iz(DF%n_cells))
 
-        do j = 1, df%Ny
-            df%rhoy(j) = df%rho_e * (0.7_dp * df%yc((j-1) * df%Nz) / df%d_i + 0.6_dp)
+        !===================================================================================================
+        ! Find filter half-width and convolution coefficients for velocity when filtering in the z-direction
+        !===================================================================================================
+
+        FF%Ny_max = 0
+        FF%Nz_max = 0
+        b_size = 0
+
+        do idx = 1, DF%n_cells
+
+            Iz(idx) = FF%Iz_inn + (FF%Iz_out - FF%Iz_inn) * 0.5_dp * (1.0_dp + tanh((DF%yc(idx) / DF%d_i - 0.2_dp) / 0.03_dp))
+            n_int = max(1.0_dp, Iz(idx) / DF%dz(idx))
+            n_val = 2 * int(n_int)
+            FF%N_zs(idx) = n_val
+
+            b_size = b_size + 2 * n_val + 1
+            FF%bz_offsets(idx) = b_size - n_val
+            if (n_val > FF%Nz_max) FF%Nz_max = n_val
         end do
-    end subroutine rhoy_test
 
+        allocate(FF%r_zs((DF%Nz + 2 * FF%Nz_max) * DF%Ny))
+        allocate(FF%bz(b_size))
 
-    !   This subroutine generates white noise for the filtering. It uses the PCG random number generator 
-    !   to generate normally distributed random numbers.
+        do idx = 1, DF%n_cells
 
-    subroutine generate_white_noise(df)
+            N = FF%N_zs(idx)
+            offset = FF%bz_offsets(idx)
+
+            sum = 0.0_dp
+
+            do i = -N, N
+                val = exp(-2.0_dp * pi * real(abs(i), dp) / real(N, dp) )
+                sum = sum + val * val
+            end do
+            sum = sqrt(sum)
+
+            do i = -N, N
+                FF%bz(offset + i) = exp(-2.0_dp * pi * abs(i) / real(N, dp)) / sum
+            end do
+        end do
+
+        !===================================================================================================
+        ! Find filter half-width and convolution coefficients for velocity when filtering in the y-direction
+        !===================================================================================================
+
+        b_size = 0
+
+        do idx = 1, DF%n_cells
+
+            Iy = 0.67_dp * Iz(idx)
+            n_int = max(1.0_dp, Iy / DF%dy(idx))
+            n_val = 2 * int(n_int)
+
+            b_size = b_size + 2 * n_val + 1
+            FF%by_offsets(idx) = b_size - n_val
+            FF%N_ys(idx) = n_val            
+            if (n_val > FF%Ny_max) FF%Ny_max = n_val
+        end do
+
+        allocate(FF%r_ys(DF%Nz * (2 * FF%Ny_max + DF%Ny)))
+        allocate(FF%by(b_size))
+
+        do idx = 1, DF%n_cells
+
+            N = FF%N_ys(idx)
+            offset = FF%by_offsets(idx)
+
+            sum = 0.0_dp
+
+            do i = -N, N
+                val = exp(-2.0_dp * pi * real(abs(i), dp) / real(N, dp) )
+                sum = sum + val * val
+            end do
+            sum = sqrt(sum)
+
+            do i = -N, N
+                FF%by(offset + i) = exp(-2.0_dp * pi * abs(i) / real(N, dp)) / sum
+            end do
+        end do
+
+    end subroutine calculate_filter_properties
+
+    subroutine get_RST(DF)
+        implicit none
+        type(digital_filter_type), intent(inout) :: DF
+        integer :: i, j, count, ios
+        character(len=500) :: line
+        real(kind=dp), allocatable :: urms_us(:), vrms_us(:), wrms_us(:), uvrms_us(:), u_rms(:), v_rms(:), w_rms(:), uv_rms(:)
+        real(kind=dp) :: values(28)
+        real(kind=dp) :: val, x_est, Re, Cf, tau_w, u_tau
+
+        ! Allocate vectors for arrays
+        allocate(urms_us(DF%vel_file_N_values))
+        allocate(vrms_us(DF%vel_file_N_values))
+        allocate(wrms_us(DF%vel_file_N_values))
+        allocate(uvrms_us(DF%vel_file_N_values))
+        allocate(u_rms(DF%vel_file_N_values))
+        allocate(v_rms(DF%vel_file_N_values))
+        allocate(w_rms(DF%vel_file_N_values))
+        allocate(uv_rms(DF%vel_file_N_values))
+        allocate(DF%R11(DF%vel_file_N_values))
+        allocate(DF%R21(DF%vel_file_N_values))
+        allocate(DF%R22(DF%vel_file_N_values))
+        allocate(DF%R33(DF%vel_file_N_values))
+
+        open(unit = 10, file=DF%vel_fluc_file, status='old', action='read', iostat=ios)
+        if (ios /= 0) then
+            print *, 'Error opening input file'
+            stop 
+        end if
+
+        ! Skip header lines
+        do i = 1, DF%vel_file_offset
+            read(10, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+        end do
+
+        count = 1
+        
+        ! Read lines to gather data
+        do  
+            read(10, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+
+            if (len_trim(line) == 0) cycle
+
+            read(line, *, iostat=ios) (values(j), j = 1,28)
+            if (ios /= 0) cycle
+
+            if (count <= DF%vel_file_N_values) then
+                urms_us(count) = values(9)
+                vrms_us(count) = values(11)
+                wrms_us(count) = values(10)
+                uvrms_us(count) = values(16)
+            end if
+            count = count + 1
+        end do
+
+        close(10)
+
+        ! Turbulent boundary layer estimates
+        Re = DF%rho_e * DF%U_e / DF%mu_e
+        val = DF%d_i / 0.37_dp * Re**(1.0_dp/5.0_dp)
+        x_est = val**(5.0_dp / 4.0_dp)
+
+        Cf = 0.0576_dp / (Re * x_est)**(1.0_dp / 5.0_dp)
+        tau_w = 33.6_dp
+        u_tau = sqrt(tau_w / 0.0264_dp)
+
+        ! Scale u'_rms / u* to inflow u*
+        do i = 1, DF%vel_file_N_values
+            u_rms(i) = urms_us(i) * u_tau
+            v_rms(i) = vrms_us(i) * u_tau
+            w_rms(i) = wrms_us(i) * u_tau
+            uv_rms(i) = uvrms_us(i) * u_tau**2
+        end do
+
+        ! Set Reynolds stress terms
+        do i = 1, DF%vel_file_N_values
+            DF%R11(i) = u_rms(i)**2
+            DF%R21(i) = uv_rms(i)
+            DF%R22(i) = v_rms(i)**2
+            DF%R33(i) = w_rms(i)**2
+        end do
+
+        DF%d_v = 0.0002 * DF%d_i    ! Will be changed
+        
+    end subroutine get_RST
+
+    subroutine generate_white_noise(DF)
         use, intrinsic :: iso_fortran_env, only: dp => real64
         implicit none
-        type(digital_filter_type), intent(inout) :: df
+        type(digital_filter_type), intent(inout) :: DF
 
-        call fill_with_noise(df%ru_ys)
-        call fill_with_noise(df%ru_zs)
-        call fill_with_noise(df%rv_ys)
-        call fill_with_noise(df%rv_zs)
-        call fill_with_noise(df%rw_ys)
-        call fill_with_noise(df%rw_zs)
+        call fill_with_noise(DF%u%r_ys)
+        call fill_with_noise(DF%u%r_zs)
+        call fill_with_noise(DF%v%r_ys)
+        call fill_with_noise(DF%v%r_zs)
+        call fill_with_noise(DF%w%r_ys)
+        call fill_with_noise(DF%w%r_zs)
  
         contains
             subroutine fill_with_noise(vec)
@@ -259,827 +406,237 @@ contains
 
     end subroutine generate_white_noise
     
-
-    !   This subroutine uses prescribed integral length scales Iz and Iy to find the filter width
-    !   for each cell as well as calculating the convolution coefficients and create the storage for 
-    !   white noise vectors. It is only called in the constructor and is not called again.
-
-    subroutine calculate_filter_properties(df)
+    subroutine filtering_sweeps(DF, FF)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
-    
-
-        integer Ny_max, Nz_max, i, j, k, idx, b_size, kk, n_val
-        real(kind=dp) n_int, sum, val, Iz_out, Iz_inn
-
-
-        !=============================================================================================
-        ! Find filter half-width and convolution coefficients for u' when filtering in the z-direction
-        !=============================================================================================
-
-        ! Define integral length scales
-        Iz_out = 0.4_dp * df%d_i
-        Iz_inn = 150.0_dp * df%d_v
-
-        ! Holdering for maximum filter widths. Used for creating ghost cells.
-        Ny_max = 0
-        Nz_max = 0 
-        b_size = 0
-
-        ! Loop to find integral length scales per cell and get half-widths. 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
-
-                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
-                n_val = 2 * int(n_int);
-                df%Nu_zs(idx) = n_val
-
-                b_size = b_size + 2 * n_val + 1
-                df%buz_offsets(idx) = b_size - n_val
-
-                if (n_val > Nz_max) Nz_max = n_val
-
-            end do  
-        end do
-
-        ! Allocate space for random data and filter coefficient arrays.
-        df%N_holder(1) = Nz_max
-        allocate(df%ru_zs((df%Nz + 2 * Nz_max) * df%Ny))
-        allocate(df%bu_z(b_size))              
-
-        ! This loop calculates the vector of filter coefficients for each cell (i,j).
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-
-                sum = 0.0_dp
-                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-                do i = 1, 2 * df%Nu_zs(idx) + 1
-                    kk = (i - 1) - df%Nu_zs(idx)          ! Offset i-value since sum is from -N to N.
-                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_zs(idx), dp))
-                    sum = sum + val * val
-                end do
-                sum = sqrt(sum)
-
-                ! Loop through and calculate final vector of filter coefficients.
-                do i = 1, 2 * df%Nu_zs(idx) + 1
-
-                 ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
-                 ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
-                 ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
-                 kk = (i - 1) - df%Nu_zs(idx)
-                 df%bu_z(df%buz_offsets(idx) + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_zs(idx), dp)) / sum
-                end do
-            end do
-        end do
-
-
-        !=============================================================================================
-        ! Find filter half-width and convolution coefficients for u' when filtering in the y-direction
-        !=============================================================================================
-        b_size = 0
-        ! Loop to find integral length scales per cell and get half-widths. 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-
-                df%Iy(idx) = 0.67_dp * df%Iz(idx)
-                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
-                n_val = 2 * int(n_int)
-
-                b_size = b_size + 2 * n_val + 1
-                df%buy_offsets(idx) = b_size - n_val
-
-                df%Nu_ys(idx) = n_val
-                if (n_val > Ny_max) Ny_max = n_val
-            end do
-        end do
-
-        ! Allocate space for random data and filter coefficient arrays.
-        df%N_holder(2) = Ny_max
-        allocate(df%ru_ys(df%Nz * (2 * Ny_max + df%Ny)))
-        allocate(df%bu_y(b_size))
-
-
-        ! This loop calculates the vector of filter coefficients for each cell (i,j).
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-
-                idx = (j - 1) * df%Nz + k 
-                sum = 0.0_dp
-
-                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-                do i = 1, 2 * df%Nu_ys(idx) + 1
-                    kk = (i - 1) - df%Nu_ys(idx)
-                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_ys(idx), dp))
-                    sum = sum + val * val
-                end do
-                sum = sqrt(sum)
-
-                ! Loop through and calculate final vector of filter coefficients.
-                do i = 1, 2 * df%Nu_ys(idx) + 1
-                    kk = (i - 1) - df%Nu_ys(idx)
-                    df%bu_y(df%buy_offsets(idx) + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nu_ys(idx), dp)) / sum
-                end do
-            end do
-        end do
-
-        !=============================================================================================
-        ! Find filter half-width and convolution coefficients for v' when filtering in the z-direction
-        !=============================================================================================
-
-        ! Define integral length scales
-        Iz_out = 0.3_dp * df%d_i
-        Iz_inn = 75.0_dp * df%d_v
-
-        ! Holdering for maximum filter widths. Used for creating ghost cells.
-        Ny_max = 0
-        Nz_max = 0 
-        b_size = 0
-
-        ! Loop to find integral length scales per cell and get half-widths. 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
-
-                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
-                n_val = 2 * int(n_int);
-                df%Nv_zs(idx) = n_val
-
-                b_size = b_size + 2 * n_val + 1
-                df%bvz_offsets(idx) = b_size - n_val
-
-                if (n_val > Nz_max) Nz_max = n_val
-
-            end do  
-        end do
-
-        ! Allocate space for random data and filter coefficient arrays.
-        df%N_holder(3) = Nz_max
-        allocate(df%rv_zs((df%Nz + 2 * Nz_max) * df%Ny))
-        allocate(df%bv_z(b_size))              
-
-        ! This loop calculates the vector of filter coefficients for each cell (i,j).
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k       ! Cell index
-
-                sum = 0.0_dp
-                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-                do i = 1, 2 * df%Nv_zs(idx) + 1
-                    kk = (i - 1) - df%Nv_zs(idx)          ! Offset i-value since sum is from -N to N.
-                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_zs(idx), dp))
-                    sum = sum + val * val
-                end do
-                sum = sqrt(sum)
-
-                ! Loop through and calculate final vector of filter coefficients.
-                do i = 1, 2 * df%Nv_zs(idx) + 1
-
-                 ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
-                 ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
-                 ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
-                 kk = (i - 1) - df%Nv_zs(idx)
-                 df%bv_z(df%bvz_offsets(idx) + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_zs(idx), dp)) / sum
-                end do
-            end do
-        end do
-
-
-        !=============================================================================================
-        ! Find filter half-width and convolution coefficients for v' when filtering in the y-direction
-        !=============================================================================================
-        b_size = 0
-        ! Loop to find integral length scales per cell and get half-widths. 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-
-                df%Iy(idx) = 0.67_dp * df%Iz(idx)
-                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
-                n_val = 2 * int(n_int)
-
-                b_size = b_size + 2 * n_val + 1
-                df%bvy_offsets(idx) = b_size - n_val
-
-                df%Nv_ys(idx) = n_val
-                if (n_val > Ny_max) Ny_max = n_val
-            end do
-        end do
-
-        ! Allocate space for random data and filter coefficient arrays.
-        df%N_holder(4) = Ny_max
-        allocate(df%rv_ys(df%Nz * (2 * Ny_max + df%Ny)))
-        allocate(df%bv_y(b_size))
-
-
-        ! This loop calculates the vector of filter coefficients for each cell (i,j).
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-
-                idx = (j - 1) * df%Nz + k       ! Cell index
-                sum = 0.0_dp
-
-                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-                do i = 1, 2 * df%Nv_ys(idx) + 1
-                    kk = (i - 1) - df%Nv_ys(idx)
-                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_ys(idx), dp))
-                    sum = sum + val * val
-                end do
-                sum = sqrt(sum)
-
-                ! Loop through and calculate final vector of filter coefficients.
-                do i = 1, 2 * df%Nv_ys(idx) + 1
-                    kk = (i - 1) - df%Nv_ys(idx)
-                    df%bv_y(df%bvy_offsets(idx) + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nv_ys(idx), dp)) / sum
-                end do
-            end do
-        end do
-
-
-        !=============================================================================================
-        ! Find filter half-width and convolution coefficients for w' when filtering in the z-direction
-        !=============================================================================================
-
-        ! Define integral length scales
-        Iz_out = 0.4_dp * df%d_i
-        Iz_inn = 150.0_dp * df%d_v
-
-        ! Holdering for maximum filter widths. Used for creating ghost cells.
-        Ny_max = 0
-        Nz_max = 0 
-        b_size = 0
-
-        ! Loop to find integral length scales per cell and get half-widths. 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-                df%Iz(idx) = Iz_inn + (Iz_out - Iz_inn) * 0.5_dp * (1.0_dp + tanh((df%yc(idx) / df%d_i - 0.2_dp) / 0.03_dp))
-
-                n_int = max(1.0_dp, df%Iz(idx) / df%dz(idx))
-                n_val = 2 * int(n_int);
-                df%Nw_zs(idx) = n_val
-
-                b_size = b_size + 2 * n_val + 1
-                df%bwz_offsets(idx) = b_size - n_val
-
-                if (n_val > Nz_max) Nz_max = n_val
-
-            end do  
-        end do
-
-        ! Allocate space for random data and filter coefficient arrays.
-        df%N_holder(5) = Nz_max
-        allocate(df%rw_zs((df%Nz + 2 * Nz_max) * df%Ny))
-        allocate(df%bw_z(b_size))              
-
-        ! This loop calculates the vector of filter coefficients for each cell (i,j).
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k 
-                sum = 0.0_dp
-                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-                do i = 1, 2 * df%Nw_zs(idx) + 1
-                    kk = (i - 1) - df%Nw_zs(idx)          ! Offset i-value since sum is from -N to N.
-                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_zs(idx), dp))
-                    sum = sum + val * val
-                end do
-                sum = sqrt(sum)
-
-                ! Loop through and calculate final vector of filter coefficients.
-                do i = 1, 2 * df%Nw_zs(idx) + 1
-
-                 ! Since filter width varies per cell, this index brings us to the actual start of the b vector 
-                 ! for this cell. We go up to the start of the vector N_idx, but since each cell gets 2 * Nz_max + 1,
-                 ! and most cells dont need this large of a vector, it goes to the center of the b-vector ( + Nz_max).
-                 kk = (i - 1) - df%Nw_zs(idx)
-                 df%bw_z(df%bwz_offsets(idx) + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_zs(idx), dp)) / sum
-                end do
-            end do
-        end do
-
-
-        !=============================================================================================
-        ! Find filter half-width and convolution coefficients for w' when filtering in the y-direction
-        !=============================================================================================
-        b_size = 0
-        ! Loop to find integral length scales per cell and get half-widths. 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-
-                df%Iy(idx) = 0.67_dp * df%Iz(idx)
-                n_int = max(1.0_dp, df%Iy(idx) / df%dy(idx))
-                n_val = 2 * int(n_int)
-
-                b_size = b_size + 2 * n_val + 1 
-                df%bwy_offsets(idx) = b_size - n_val
-
-                df%Nw_ys(idx) = n_val
-                if (n_val > Ny_max) Ny_max = n_val
-            end do
-        end do
-
-        ! Allocate space for random data and filter coefficient arrays.
-        df%N_holder(6) = Ny_max
-        allocate(df%rw_ys(df%Nz * (2 * Ny_max + df%Ny)))
-        allocate(df%bw_y(b_size))
-
-
-        ! This loop calculates the vector of filter coefficients for each cell (i,j).
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-
-                idx = (j - 1) * df%Nz + k       ! Cell index
-                sum = 0.0_dp
-
-                ! Loop through filter width of cell to compute root sum of intermediate filter coefficients.
-                do i = 1, 2 * df%Nw_ys(idx) + 1
-                    kk = (i - 1) - df%Nw_ys(idx)
-                    val = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_ys(idx), dp))
-                    sum = sum + val * val
-                end do
-                sum = sqrt(sum)
-
-                ! Loop through and calculate final vector of filter coefficients.
-                do i = 1, 2 * df%Nw_ys(idx) + 1
-                    kk = (i - 1) - df%Nw_ys(idx)
-                    df%bw_y(df%bwy_offsets(idx) + kk) = exp(-2.0_dp * pi * abs(kk) / real(df%Nw_ys(idx), dp)) / sum
-                end do
-            end do
-        end do
-       
-    end subroutine calculate_filter_properties
-
-
-    !  This scales the fluctuations by the Reynolds stress tensor R_ij. It is only for the first time step 
-    !  so it doesnt correlate the old fluctuations with the new ones. 
-
-    subroutine correlate_fields_ts1(df)
-        implicit none
-        type(digital_filter_type), intent(inout) :: df
-        real(kind=dp) b
-        integer :: k, j, idx
-
-        do j = 1, df%Ny
-
-            if (df%R11(j) < 1e-10) then
-                b = 0.0
-            else
-                b = df%R21(j) / sqrt(df%R11(j))
-            end if
-
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-
-                df%u_fluc(idx) = sqrt(df%R11(j)) * df%u_filt(idx)
-                df%v_fluc(idx) = b * df%u_filt(idx) + sqrt(df%R22(j) - b**2) * df%v_filt(idx)
-                df%w_fluc(idx) = sqrt(df%R33(j)) * df%w_filt(idx)
-            end do
-        end do
-        
-        call set_old(df)
-    end subroutine correlate_fields_ts1
-
-
-    !  This scales the fluctuations by the Reynolds stress tensor R_ij. It then correclates the old fields 
-    !  with the new ones by using an integral length/time scale.
-
-    subroutine correlate_fields(df)
-        implicit none
-        type(digital_filter_type), intent(inout) :: df
-        real(kind=dp) b, Ix, lt
-        integer :: j, k, idx
-
-        ! Timestep correlation for u'
-        Ix = 0.8_dp * df%d_i
-        lt = Ix / df%U_e
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-                df%u_filt(idx) = df%u_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) &
-                                + df%u_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
-            end do
-        end do
-
-
-        ! Timestep correlation for v'
-        Ix = 0.3_dp * df%d_i
-        lt = Ix / df%U_e
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-                df%v_filt(idx) = df%v_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) &
-                                + df%v_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
-            end do
-        end do
-
-
-        ! Timestep correlation for w'
-        Ix = 0.8_dp * df%d_i
-        lt = Ix / df%U_e
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                idx = (j - 1) * df%Nz + k
-                df%w_filt(idx) = df%w_filt_old(idx) * exp(-pi * df%dt / (2.0_dp * lt)) &
-                                + df%w_filt(idx) * sqrt(1.0_dp - exp(-pi * df%dt / lt))
-            end do
-        end do
-
-
-        ! Scale by Reynolds stress tensor
-        do j = 1, df%Ny
-
-            if (df%R11(j) < 1e-10) then
-                b = 0.0
-            else
-                b = df%R21(j) / sqrt(df%R11(j))
-            end if
-
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-
-                df%u_fluc(idx) = sqrt(df%R11(j)) * df%u_filt(idx)
-                df%v_fluc(idx) = b * df%u_filt(idx) + sqrt(df%R22(j) - b**2) * df%v_filt(idx)
-                df%w_fluc(idx) = sqrt(df%R33(j)) * df%w_filt(idx)
-            end do
-        end do
-        
-        call set_old(df)
-
-    end subroutine correlate_fields
-
-    !  This functions filters the random data in y and z seeps using the filter coefficients and filter widths 
-    !  previously calculated. The filtering is done in two sweeps, first in y and then in z direction.
-
-    subroutine filtering_sweeps(df)
-        implicit none
-        type(digital_filter_type), intent(inout) :: df
-        integer :: r_idy, r_idz, idx, kk, Ny_pad, Nz_pad, i, j, k
+        type(digital_filter_type), intent(inout) :: DF
+        type(FilterField), intent(inout) :: FF
+        integer :: r_idy, r_idz, idx, N, offset, Ny_pad, Nz_pad, i, j, k
         real(kind=dp) :: sum
 
         ! ========================================
-        ! ------: Filter u' in y-direction :------
+        ! ------: Filter in y-direction :------
         ! ========================================
         
-        Nz_pad = df%N_holder(1)
-        Ny_pad = df%N_holder(2)
+        Nz_pad = FF%Nz_max
+        Ny_pad = FF%Ny_max
 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
+        do j = 1, DF%Ny
 
-                r_idy = ((j - 1) + Ny_pad) * df%Nz + k
-                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
-                idx = (j - 1) * df%Nz + k
+            r_idy = (j - 1 + Ny_pad) * DF%Nz
+            r_idz = (j - 1) * (DF%Nz + 2 * Nz_pad) + Nz_pad
+            idx = (j - 1) * DF%Nz
+
+            do k = 1, DF%Nz
+
+                r_idy = r_idy + 1
+                r_idz = r_idz + 1
+                idx = idx + 1
+
+                N = FF%N_ys(idx)
+                offset = FF%by_offsets(idx)
 
                 sum = 0.0
-                do i = 1, 2 * df%Nu_ys(idx) + 1
-                    kk = (i - 1) - df%Nu_ys(idx)
-                    sum = sum + df%bu_y(df%buy_offsets(idx) + kk) * df%ru_ys(r_idy + kk * df%Nz)
+                do i = -N, N
+                    sum = sum + FF%by(offset + i) * FF%r_ys(r_idy + i * DF%Nz)
                 end do
 
-                df%ru_zs(r_idz) = sum
+                FF%r_zs(r_idz) = sum
 
             end do
         end do
 
 
         ! ========================================
-        ! ------: Filter u' in z-direction :------
+        ! ------: Filter in z-direction :------
         ! ========================================
 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
+        do j = 1, DF%Ny
 
-                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
-                idx = (j - 1) * df%Nz + k
+            r_idz = (j - 1) * (DF%Nz + 2 * Nz_pad) + Nz_pad
+            idx = (j - 1) * DF%Nz
+
+            do k = 1, DF%Nz
+
+                r_idz = r_idz + 1
+                idx = idx + 1
+
+                N = FF%N_zs(idx)
+                offset = FF%bz_offsets(idx)
 
                 sum = 0.0
-                do i = 1, 2 * df%Nu_zs(idx) + 1
-                    kk = (i - 1) - df%Nu_zs(idx)
-                    sum = sum + df%bu_z(df%buz_offsets(idx) + kk) * df%ru_zs(r_idz + kk)
+                do i = -N, N
+                    sum = sum + FF%bz(offset + i) * FF%r_zs(r_idz + i)
                 end do
 
-                df%u_filt(idx) = sum
-
-            end do
-        end do
-
-
-        ! ========================================
-        ! ------: Filter v' in y-direction :------
-        ! ========================================
-        
-        Nz_pad = df%N_holder(3)
-        Ny_pad = df%N_holder(4)
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                r_idy = ((j - 1) + Ny_pad) * df%Nz + k
-                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
-                idx = (j - 1) * df%Nz + k
-
-                sum = 0.0
-                do i = 1, 2 * df%Nv_ys(idx) + 1
-                    kk = (i - 1) - df%Nv_ys(idx)
-                    sum = sum + df%bv_y(df%bvy_offsets(idx) + kk) * df%rv_ys(r_idy + kk * df%Nz)
-                end do
-
-                df%rv_zs(r_idz) = sum
-
-            end do
-        end do
-        
-
-        ! ========================================
-        ! ------: Filter v' in z-direction :------
-        ! ========================================
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
-                idx = (j - 1) * df%Nz + k
-
-                sum = 0.0
-                do i = 1, 2 * df%Nv_zs(idx) + 1
-                    kk = (i - 1) - df%Nv_zs(idx)
-                    sum = sum + df%bv_z(df%bvz_offsets(idx) + kk) * df%rv_zs(r_idz + kk)
-                end do
-
-                df%v_filt(idx) = sum
-
-            end do
-        end do
-
-
-        ! ========================================
-        ! ------: Filter w' in y-direction :------
-        ! ========================================
-        
-        Nz_pad = df%N_holder(5)
-        Ny_pad = df%N_holder(6)
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                r_idy = ((j - 1) + Ny_pad) * df%Nz + k
-                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
-                idx = (j - 1) * df%Nz + k
-
-                sum = 0.0
-                do i = 1, 2 * df%Nw_ys(idx) + 1
-                    kk = (i - 1) - df%Nw_ys(idx)
-                    sum = sum + df%bw_y(df%bwy_offsets(idx) + kk) * df%rw_ys(r_idy + kk * df%Nz)
-                end do
-
-                df%rw_zs(r_idz) = sum
-
-            end do
-        end do
-
-        ! ========================================
-        ! ------: Filter w' in z-direction :------
-        ! ========================================
-
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-
-                r_idz = (j - 1) * (df%Nz + 2 * Nz_pad) + Nz_pad + k
-                idx = (j - 1) * df%Nz + k
-
-                sum = 0.0
-                do i = 1, 2 * df%Nw_zs(idx) + 1
-                    kk = (i - 1) - df%Nw_zs(idx)
-                    sum = sum + df%bw_z(df%bwz_offsets(idx) + kk) * df%rw_zs(r_idz + kk)
-                end do
-
-                df%w_filt(idx) = sum
+                FF%filt(idx) = sum
 
             end do
         end do
 
     end subroutine filtering_sweeps
 
-
-    !  This runs all the filtering processes and updates the fluctuations. This is the only function that should 
-    !  be called from the main program after initializing the DIGITAL_FILTER object. It generates white noise, filters 
-    !  the velocity fluctuations in y and z sweeps, and correlates the fields. @param dt_input is the time step size 
-    !  from the CFD simulation.
-
-    subroutine filter(df, dt_input)
+    subroutine correlate_fields(DF, FF)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
+        type(digital_filter_type), intent(inout) :: DF
+        type(FilterField), intent(inout) :: FF
+        integer :: idx
+
+
+        do idx = 1, DF%n_cells
+                FF%filt(idx) = FF%filt_old(idx) * exp(-pi * DF%dt / (2.0_dp * FF%Lt)) &
+                                + FF%filt(idx) * sqrt(1.0_dp - exp(-pi * DF%dt / FF%Lt))
+        end do
+
+    end subroutine correlate_fields
+
+    subroutine apply_RST_scaling(DF)
+        implicit none
+        type(digital_filter_type), intent(inout) :: DF
+        integer :: j, k, idx
+        real(kind=dp) :: b
+
+        do j = 1, DF%Ny
+
+            idx = (j - 1) * DF%Nz
+            if (DF%R11(j) < 1.0e-10_dp) then
+                b = 0.0_dp
+            else 
+                b = DF%R21(j) / sqrt(DF%R11(j))
+            end if
+
+            do k = 1, DF%Nz
+                idx = idx + 1
+
+                DF%u%fluc(idx) = sqrt(DF%R11(j)) * DF%u%filt(idx)
+                DF%v%fluc(idx) = b * DF%u%filt(idx) + sqrt(DF%R22(j) - b**2) * DF%v%filt(idx)
+                DF%w%fluc(idx) = sqrt(DF%R33(j)) * DF%w%filt(idx)
+
+                DF%u%filt_old(idx) = DF%u%filt(idx)
+                DF%v%filt_old(idx) = DF%v%filt(idx)
+                DF%w%filt_old(idx) = DF%w%filt(idx)
+
+            end do
+        end do
+
+    end subroutine apply_RST_scaling
+
+    subroutine filter(DF, dt_input)
+        implicit none
+        type(digital_filter_type), intent(inout) :: DF
         real(kind=dp), intent(in) :: dt_input
         real(kind=dp) :: start, end, elapsed
         character(len=50) :: filename
-        integer :: i
 
-        df%dt = dt_input
+        DF%dt = dt_input
 
-        call generate_white_noise(df)   
-        call filtering_sweeps(df)
-        call correlate_fields(df)     
-        filename = "../files/f_vel_fluc.dat"
-        call write_tecplot(df, filename)
+        call cpu_time(start)
 
+        call generate_white_noise(DF)  
+ 
+        call filtering_sweeps(DF, DF%u)
+        call filtering_sweeps(DF, DF%v)
+        call filtering_sweeps(DF, DF%w)
+
+        call correlate_fields(DF, DF%u)
+        call correlate_fields(DF, DF%v)
+        call correlate_fields(DF, DF%w)
+
+        call apply_RST_scaling(DF)
+
+        call cpu_time(end)
+        elapsed = end - start
+        print *, "Time for filtering step (s): ", elapsed
+
+        filename = "../files/f_vel_fluc.csv"
+        call write_csv(DF, filename)
 
     end subroutine filter
 
-
-    !  This function uses the Strong Reynolds Analogy to find fluctuations for temperature and density assuming 
-    !  pressure is constant in the boundary layer. It currently assumes constant gamma = 1.4
-
-    subroutine get_rho_T_fluc(df)
-        type(digital_filter_type), intent(inout) :: df
+    subroutine get_rho_T_fluc(DF)
+        type(digital_filter_type), intent(inout) :: DF
         real(kind=dp) :: val
         integer :: j, k, idx
 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-                val = (-1.4_dp - 1.0_dp) * df%My(j)**2 * df%Uy(j) * df%u_fluc(idx)
-                df%T_fluc(idx) = val
-                df%rho_fluc(idx) = -val / df%Ty(j) * df%rhoy(j)
+        do j = 1, DF%Ny
+            do k = 1, DF%Nz
+                idx = (j - 1) * DF%Nz + k
+                val = (-1.4_dp - 1.0_dp) * DF%My(j)**2 * DF%Uy(j) * DF%u%fluc(idx)
+                DF%T_fluc(idx) = val
+                DF%rho_fluc(idx) = -val / DF%Ty(j) * DF%rhoy(j)
             end do
         end do
         
     end subroutine get_rho_T_fluc
 
-    !   This sets old fluctuations to new ones. 
-    subroutine set_old(df)
+
+    ! ========: Debugging Subroutines :========
+
+    ! subroutine test(DF)
+    !     implicit none
+    !     type(digital_filter_type), intent(inout) :: DF
+    !     character(len=50) :: filename
+    !     filename = "../../files/fluc.csv"
+    !     call generate_white_noise(DF)
+    !     call filtering_sweeps(DF)
+    !     call correlate_fields_ts1(DF)
+    !     call write_csv(DF, filename)    
+    ! end subroutine test
+
+    subroutine display_data(array)
+            implicit none
+            real(kind=dp), intent(in) :: array(:)       ! the array to display
+            integer :: i
+
+            do i = 1, size(array)
+                print *, array(i)
+            end do
+    end subroutine display_data
+
+    subroutine find_mean_variance(DF, v)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
-        integer :: j, k, idx
+        type(digital_filter_type), intent(inout) :: DF
 
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-
-                df%u_filt_old(idx) = df%u_filt(idx)
-                df%v_filt_old(idx) = df%v_filt(idx)
-                df%w_filt_old(idx) = df%w_filt(idx)
-            end do  
-        end do
-
-    end subroutine set_old
-
-    subroutine test(df)
-        implicit none
-        type(digital_filter_type), intent(inout) :: df
-        character(len=50) :: filename
-        filename = "../../files/fluc.csv"
-        call generate_white_noise(df)
-        call filtering_sweeps(df)
-        call correlate_fields_ts1(df)
-        call write_csv(df, filename)    
-    end subroutine test
-
-    subroutine find_mean_variance(df, v)
-        implicit none
-        type(digital_filter_type), intent(inout) :: df
-
-        real(kind=dp), intent(in) :: v(df%n_cells)
+        real(kind=dp), intent(in) :: v(DF%n_cells)
         integer i  
         real(kind=dp) :: mean_sum, var_sum, mean, variance
     
         mean_sum = 0.0_dp
         var_sum = 0.0_dp
 
-        do i = 1, df%n_cells
+        do i = 1, DF%n_cells
             mean_sum = mean_sum + v(i)
         end do
 
-        mean = mean_sum / real(df%n_cells, dp)
+        mean = mean_sum / real(DF%n_cells, dp)
 
-        do i = 1, df%n_cells
+        do i = 1, DF%n_cells
             var_sum = var_sum + (v(i) - mean)**2
         end do
         
-        variance = var_sum / real(df%n_cells, dp)
+        variance = var_sum / real(DF%n_cells, dp)
 
         print *, "Mean:", mean, " Variance:", variance
 
     end subroutine find_mean_variance
 
-    subroutine get_RST(df)
+    subroutine rhoy_test(DF)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
-        integer :: i, j, count, ios
-        character(len=500) :: line
-        real(kind=dp), allocatable :: urms_us(:), vrms_us(:), wrms_us(:), uvrms_us(:), u_rms(:), v_rms(:), w_rms(:), uv_rms(:)
-        real(kind=dp) :: values(28)
-        real(kind=dp) :: val, x_est, Re, Cf, tau_w, u_tau, u_Mor
+        type(digital_filter_type), intent(inout) :: DF
+        integer j
 
-        ! Allocate vectors for arrays
-        allocate(urms_us(df%vel_file_N_values))
-        allocate(vrms_us(df%vel_file_N_values))
-        allocate(wrms_us(df%vel_file_N_values))
-        allocate(uvrms_us(df%vel_file_N_values))
-        allocate(u_rms(df%vel_file_N_values))
-        allocate(v_rms(df%vel_file_N_values))
-        allocate(w_rms(df%vel_file_N_values))
-        allocate(uv_rms(df%vel_file_N_values))
-        allocate(df%R11(df%vel_file_N_values))
-        allocate(df%R21(df%vel_file_N_values))
-        allocate(df%R22(df%vel_file_N_values))
-        allocate(df%R33(df%vel_file_N_values))
+        allocate(DF%rhoy(DF%Ny))       
 
-        open(unit = 10, file=df%vel_fluc_file, status='old', action='read', iostat=ios)
-        if (ios /= 0) then
-            print *, 'Error opening input file'
-            stop 
-        end if
-
-        ! Skip header lines
-        do i = 1, df%vel_file_offset
-            read(10, '(A)', iostat=ios) line
-            if (ios /= 0) exit
+        do j = 1, DF%Ny
+            DF%rhoy(j) = DF%rho_e * (0.7_dp * DF%yc((j-1) * DF%Nz) / DF%d_i + 0.6_dp)
         end do
-
-        count = 1
-        
-        ! Read lines to gather data
-        do  
-            read(10, '(A)', iostat=ios) line
-            if (ios /= 0) exit
-
-            if (len_trim(line) == 0) cycle
-
-            read(line, *, iostat=ios) (values(j), j = 1,28)
-            if (ios /= 0) cycle
-
-            if (count <= df%vel_file_N_values) then
-                urms_us(count) = values(9)
-                vrms_us(count) = values(11)
-                wrms_us(count) = values(10)
-                uvrms_us(count) = values(16)
-            end if
-            count = count + 1
-        end do
-
-        close(10)
-
-        ! Turbulent boundary layer estimates
-        Re = df%rho_e * df%U_e / df%mu_e
-        val = df%d_i / 0.37_dp * Re**(1.0_dp/5.0_dp)
-        x_est = val**(5.0_dp / 4.0_dp)
-        print *, "x_est ", x_est
-
-        Cf = 0.0576_dp / (Re * x_est)**(1.0_dp / 5.0_dp)
-        tau_w = 33.6_dp
-        u_tau = sqrt(tau_w / 0.0264_dp)
-
-        print *, "Cf ", Cf
-        print *, "tau_w ", tau_w
-        print *, "u_tau ", u_tau
-
-        ! Scale u'_rms / u* to inflow u*
-        do i = 1, df%vel_file_N_values
-            u_rms(i) = urms_us(i) * u_tau
-            v_rms(i) = vrms_us(i) * u_tau
-            w_rms(i) = wrms_us(i) * u_tau
-            uv_rms(i) = uvrms_us(i) * u_tau**2
-        end do
-
-        ! Set Reynolds stress terms
-        do i = 1, df%vel_file_N_values
-            df%R11(i) = u_rms(i)**2
-            df%R21(i) = uv_rms(i)
-            df%R22(i) = v_rms(i)**2
-            df%R33(i) = w_rms(i)**2
-        end do
-
-        df%d_v = 0.0002 * df%d_i    ! Will be changed
-        
-    end subroutine get_RST
+    end subroutine rhoy_test
 
 
-    !  This function writes the velocity fluctuations to a Tecplot file for visualization. It writes the z, y, u_fluc, 
-    !  v_fluc, and w_fluc data. @param filename is the name of the file to write to.
-
-    subroutine write_tecplot(df, filename)
+    ! ========: Plotting Subroutines :========
+    
+    subroutine write_tecplot(DF, filename)
         implicit none
-        type(digital_filter_type), intent(inout) :: df
+        type(digital_filter_type), intent(inout) :: DF
         character(len=*), intent(in) :: filename
         integer :: j, k, idx 
         integer :: unit, ios
@@ -1092,44 +649,44 @@ contains
         end if
 
         write(unit, '(A)') 'VARIABLES = "z", "y", "u_fluc", "v_fluc", "w_fluc"'
-        write(unit, '(A,I0,A,I0,A)') 'ZONE T="Flow Field", I=', df%Nz + 1, ', J=', df%Ny + 1, ', F=BLOCK'
+        write(unit, '(A,I0,A,I0,A)') 'ZONE T="Flow Field", I=', DF%Nz + 1, ', J=', DF%Ny + 1, ', F=BLOCK'
         write(unit, '(A)') 'VARLOCATION=([3-5]=CELLCENTERED)'
 
         ! z coordinates (node-centered)
-        do j = 1, df%Ny + 1
-            do k = 1, df% Nz + 1
-                idx = (j - 1) * (df%Nz + 1) + k
-                write(unit,'(F12.6)') df%z(idx)
+        do j = 1, DF%Ny + 1
+            do k = 1, DF% Nz + 1
+                idx = (j - 1) * (DF%Nz + 1) + k
+                write(unit,'(F12.6)') DF%z(idx)
             end do
         end do
 
         ! y coordinates (node-centered)
-        do j = 1, df%Ny + 1
-            do k = 1, df%Nz + 1
-                idx = (j - 1) * (df%Nz + 1) + k
-                write(unit,'(F12.6)') df%y(idx)
+        do j = 1, DF%Ny + 1
+            do k = 1, DF%Nz + 1
+                idx = (j - 1) * (DF%Nz + 1) + k
+                write(unit,'(F12.6)') DF%y(idx)
             end do
         end do
 
         ! u, v, w fluctuations (cell-centered)
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit,'(F12.6)') df%u_fluc(idx)
+        do j = 1, DF%Ny
+            do k = 1, DF% Nz
+                idx = (j - 1) * DF%Nz + k
+                write(unit,'(F12.6)') DF%u%fluc(idx)
             end do
         end do
 
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit,'(F12.6)') df%v_fluc(idx)
+        do j = 1, DF%Ny
+            do k = 1, DF% Nz
+                idx = (j - 1) * DF%Nz + k
+                write(unit,'(F12.6)') DF%v%fluc(idx)
             end do
         end do
 
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit,'(F12.6)') df%w_fluc(idx)
+        do j = 1, DF%Ny
+            do k = 1, DF% Nz
+                idx = (j - 1) * DF%Nz + k
+                write(unit,'(F12.6)') DF%w%fluc(idx)
             end do
         end do
 
@@ -1137,11 +694,9 @@ contains
         print *, 'Finished plotting: ', filename
     end subroutine write_tecplot
 
-
-
-    subroutine write_csv(df, filename)
+    subroutine write_csv(DF, filename)
         implicit none
-        type(digital_filter_type), intent(in) :: df
+        type(digital_filter_type), intent(in) :: DF
         character(len=*), intent(in) :: filename
         integer :: j, k, idx, iidx
         integer :: unit
@@ -1160,12 +715,12 @@ contains
         write(unit, '(A)') 'z, y, u_fluc, v_fluc, w_fluc'
 
         ! Write data row by row
-        do j = 1, df%Ny
-            do k = 1, df%Nz
-                idx = (j - 1) * df%Nz + k
-                iidx = (j - 1) * (df%Nz + 1) + k
+        do j = 1, DF%Ny
+            do k = 1, DF%Nz
+                idx = (j - 1) * DF%Nz + k
+                iidx = (j - 1) * (DF%Nz + 1) + k
                 write(unit, '(F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6)') &
-                    df%z(iidx), df%y(iidx), df%u_fluc(idx), df%v_fluc(idx), df%w_fluc(idx)
+                    DF%z(iidx), DF%y(iidx), DF%u%fluc(idx), DF%v%fluc(idx), DF%w%fluc(idx)
             end do
         end do
 
@@ -1173,110 +728,112 @@ contains
         print *, 'CSV file written to ', filename
     end subroutine write_csv
 
-    subroutine rms_add(df)
-        implicit none
-        integer :: i
-        type(digital_filter_type), intent(inout) :: df
 
-        df%rms_counter = df%rms_counter + 1
+    ! =======: RMS Calculation Subroutines :========
 
-        do i = 1, df%n_cells
-            df%urms_added(i) = df%urms_added(i) + df%u_fluc(i)**2
-            df%vrms_added(i) = df%vrms_added(i) + df%v_fluc(i)**2
-            df%wrms_added(i) = df%wrms_added(i) + df%w_fluc(i)**2
-        end do
+    ! subroutine rms_add(DF)
+    !     implicit none
+    !     integer :: i
+    !     type(digital_filter_type), intent(inout) :: DF
 
-    end subroutine rms_add
+    !     DF%rms_counter = DF%rms_counter + 1
 
-    subroutine plot_rms(df)
-        implicit none
-        character(len=200) :: filename
-        integer:: i, j, k, idx, unit, ios
-        type(digital_filter_type), intent(inout) :: df
+    !     do i = 1, DF%n_cells
+    !         DF%urms_added(i) = DF%urms_added(i) + DF%u_fluc(i)**2
+    !         DF%vrms_added(i) = DF%vrms_added(i) + DF%v_fluc(i)**2
+    !         DF%wrms_added(i) = DF%wrms_added(i) + DF%w_fluc(i)**2
+    !     end do
 
-        filename = '../files/f_vel_fluc_rms.dat'
+    ! end subroutine rms_add
 
-        do i = 1, df%n_cells
-            df%urms(i) = sqrt(df%urms_added(i) / df%rms_counter)
-            df%vrms(i) = sqrt(df%vrms_added(i) / df%rms_counter)
-            df%wrms(i) = sqrt(df%wrms_added(i) / df%rms_counter)
-        end do
+    ! subroutine plot_rms(DF)
+    !     implicit none
+    !     character(len=200) :: filename
+    !     integer:: i, j, k, idx, unit, ios
+    !     type(digital_filter_type), intent(inout) :: DF
 
-        unit = 20
-        open(unit=unit, file=filename, status='replace', action='write', iostat=ios)
-        if (ios /= 0) then
-            print *, 'Error opening file: ', filename
-            return
-        end if
+    !     filename = '../files/f_vel_fluc_rms.dat'
 
-        write(unit, '(A)') 'VARIABLES = "z", "y", "up_rms", "vp_rms", "w_rms"'
-        write(unit, '(A,I0,A,I0,A)') 'ZONE T="Flow Field", I=', df%Nz + 1, ', J=', df%Ny + 1, ', F=BLOCK'
-        write(unit, '(A)') 'VARLOCATION=([3-5]=CELLCENTERED)'
+    !     do i = 1, DF%n_cells
+    !         DF%urms(i) = sqrt(DF%urms_added(i) / DF%rms_counter)
+    !         DF%vrms(i) = sqrt(DF%vrms_added(i) / DF%rms_counter)
+    !         DF%wrms(i) = sqrt(DF%wrms_added(i) / DF%rms_counter)
+    !     end do
 
-        ! z coordinates (node-centered)
-        do j = 1, df%Ny + 1
-            do k = 1, df% Nz + 1
-                idx = (j - 1) * (df%Nz + 1) + k
-                write(unit,'(F12.6)') df%z(idx)
-            end do
-        end do
+    !     unit = 20
+    !     open(unit=unit, file=filename, status='replace', action='write', iostat=ios)
+    !     if (ios /= 0) then
+    !         print *, 'Error opening file: ', filename
+    !         return
+    !     end if
 
-        ! y coordinates (node-centered)
-        do j = 1, df%Ny + 1
-            do k = 1, df%Nz + 1
-                idx = (j - 1) * (df%Nz + 1) + k
-                write(unit,'(F12.6)') df%y(idx)
-            end do
-        end do
+    !     write(unit, '(A)') 'VARIABLES = "z", "y", "up_rms", "vp_rms", "w_rms"'
+    !     write(unit, '(A,I0,A,I0,A)') 'ZONE T="Flow Field", I=', DF%Nz + 1, ', J=', DF%Ny + 1, ', F=BLOCK'
+    !     write(unit, '(A)') 'VARLOCATION=([3-5]=CELLCENTERED)'
 
-        ! u, v, w fluctuation rms (cell-centered)
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit,'(F12.6)') df%urms(idx)
-            end do
-        end do
+    !     ! z coordinates (node-centered)
+    !     do j = 1, DF%Ny + 1
+    !         do k = 1, DF% Nz + 1
+    !             idx = (j - 1) * (DF%Nz + 1) + k
+    !             write(unit,'(F12.6)') DF%z(idx)
+    !         end do
+    !     end do
 
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit,'(F12.6)') df%vrms(idx)
-            end do
-        end do
+    !     ! y coordinates (node-centered)
+    !     do j = 1, DF%Ny + 1
+    !         do k = 1, DF%Nz + 1
+    !             idx = (j - 1) * (DF%Nz + 1) + k
+    !             write(unit,'(F12.6)') DF%y(idx)
+    !         end do
+    !     end do
 
-        do j = 1, df%Ny
-            do k = 1, df% Nz
-                idx = (j - 1) * df%Nz + k
-                write(unit,'(F12.6)') df%wrms(idx)
-            end do
-        end do
+    !     ! u, v, w fluctuation rms (cell-centered)
+    !     do j = 1, DF%Ny
+    !         do k = 1, DF% Nz
+    !             idx = (j - 1) * DF%Nz + k
+    !             write(unit,'(F12.6)') DF%urms(idx)
+    !         end do
+    !     end do
 
-        close(unit)
-        print *, 'File written to ', filename
+    !     do j = 1, DF%Ny
+    !         do k = 1, DF% Nz
+    !             idx = (j - 1) * DF%Nz + k
+    !             write(unit,'(F12.6)') DF%vrms(idx)
+    !         end do
+    !     end do
 
-    end subroutine plot_rms
+    !     do j = 1, DF%Ny
+    !         do k = 1, DF% Nz
+    !             idx = (j - 1) * DF%Nz + k
+    !             write(unit,'(F12.6)') DF%wrms(idx)
+    !         end do
+    !     end do
 
+    !     close(unit)
+    !     print *, 'File written to ', filename
 
-    subroutine get_rms(df)
-        implicit none
-        integer :: i
-        type(digital_filter_type), intent(inout) :: df
+    ! end subroutine plot_rms
 
-        df%dt = 1e-4_dp
+    ! subroutine get_rms(DF)
+    !     implicit none
+    !     integer :: i
+    !     type(digital_filter_type), intent(inout) :: DF
 
-        do i = 1, 500
+    !     DF%dt = 1e-4_dp
 
-            call generate_white_noise(df)   
-            call filtering_sweeps(df)
-            call correlate_fields(df) 
-            call rms_add(df)
+    !     do i = 1, 500
 
-        end do
+    !         call generate_white_noise(DF)   
+    !         call filtering_sweeps(DF)
+    !         call correlate_fields(DF) 
+    !         call rms_add(DF)
 
-        call plot_rms(df)
-        print *, "RMS collected"
+    !     end do
 
-    end subroutine get_rms
+    !     call plot_rms(DF)
+    !     print *, "RMS collected"
+
+    ! end subroutine get_rms
 
 
 end module DIGITAL_FILTERING
