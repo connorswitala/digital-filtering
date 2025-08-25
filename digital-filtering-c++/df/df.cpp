@@ -497,7 +497,7 @@ void DIGITAL_FILTER::rho_y_test() {
 
 // ========: RMS functions :=========
 
-void DIGITAL_FILTER::allocate_rms_structures(FilterField F) {
+void DIGITAL_FILTER::allocate_rms_structures(FilterField& F) {
     F.rms_added = Vector(n_cells, 0.0);
     F.rms = Vector(n_cells, 0.0);
 }
@@ -506,10 +506,10 @@ void DIGITAL_FILTER::rms_add()  {
     
     rms_counter++;
 
-    for (int i = 0; i < n_cells; ++i) {
-        u.rms_added[i] +=  u.fluc[i] * u.fluc[i];
-        v.rms_added[i] +=  v.fluc[i] * v.fluc[i];
-        w.rms_added[i] +=  w.fluc[i] * w.fluc[i];
+    for (int idx = 0; idx < n_cells; ++idx) {
+        u.rms_added[idx] +=  u.fluc[idx] * u.fluc[idx];
+        v.rms_added[idx] +=  v.fluc[idx] * v.fluc[idx];
+        w.rms_added[idx] +=  w.fluc[idx] * w.fluc[idx];
     }    
 }
 
@@ -520,7 +520,8 @@ void DIGITAL_FILTER::get_rms()  {
     allocate_rms_structures(w);
 
     dt = 1e-5;
-    for (int i = 0; i < 500; ++i) {
+
+    for (int i = 0; i < 20; ++i) {
         generate_white_noise();    
         filtering_sweeps(u);
         filtering_sweeps(v);
@@ -531,6 +532,7 @@ void DIGITAL_FILTER::get_rms()  {
         apply_RST_scaling();
         rms_add();
     }
+
 
     plot_rms();
 }
@@ -543,56 +545,58 @@ void DIGITAL_FILTER::plot_rms() {
         w.rms[i] = sqrt(w.rms_added[i] / rms_counter);
     }
 
-    string filename = "../files/cpp_vel_fluc_rms.dat";
+    string filename = "../files/cpp_vel_fluc_rms.csv";
 
     ofstream file(filename);
-    file << "VARIABLES = \"z\", \"y\", \"u'_rms\", \"v'_rms\", \"w'_rms\" \n";
-    file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
-    file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
+    // // file << "VARIABLES = \"z\", \"y\", \"u'_rms\", \"v'_rms\", \"w'_rms\" \n";
+    // file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
+    // file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
 
+    file << "z, y, u'_rms, v'_rms, w'_rms\n";
 
     // Loop over y (rows) and z (columns)
-    for (int j = 0; j < Ny + 1; ++j) {
-            for (int k = 0; k < Nz + 1; ++k) {
-            int idx = j * (Nz + 1) + k;  // row-major: y-major
-            file << z[idx] << endl;
-        }
-    }
-
-
-    for (int j = 0; j < Ny + 1; ++j) {
-        for (int k = 0; k < Nz + 1; ++k) {
-            int idx = j * (Nz + 1) + k;  // row-major: y-major
-            file << y[idx] << endl;
-        }
-    }
-
-
     for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;  // row-major: y-major
-            file << u.rms[idx] << endl;
+            for (int k = 0; k < Nz; ++k) {
+            int idx = j * (Nz) + k;  // row-major: y-major
+            int iidx = j * (Nz + 1) + k; // for y and z which are one size larger
+            file << z[iidx] << ", " << y[iidx] << ", " << u.rms[idx] << ", " << v.rms[idx] << ", " << w.rms[idx] << endl;
         }
     }
 
 
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;  // row-major: y-major
-            file << v.rms[idx] << endl;
-        }
-    }
+    // for (int j = 0; j < Ny + 1; ++j) {
+    //     for (int k = 0; k < Nz + 1; ++k) {
+    //         int idx = j * (Nz + 1) + k;  // row-major: y-major
+    //         file << y[idx] << endl;
+    //     }
+    // }
 
 
-    for (int j = 0; j < Ny; ++j) {
-        for (int k = 0; k < Nz; ++k) {
-            int idx = j * Nz + k;  // row-major: y-major
-            file << w.rms[idx] << endl;
-        }
-    }
+    // for (int j = 0; j < Ny; ++j) {
+    //     for (int k = 0; k < Nz; ++k) {
+    //         int idx = j * Nz + k;  // row-major: y-major
+    //         file << u.rms[idx] << endl;
+    //     }
+    // }
+
+
+    // for (int j = 0; j < Ny; ++j) {
+    //     for (int k = 0; k < Nz; ++k) {
+    //         int idx = j * Nz + k;  // row-major: y-major
+    //         file << v.rms[idx] << endl;
+    //     }
+    // }
+
+
+    // for (int j = 0; j < Ny; ++j) {
+    //     for (int k = 0; k < Nz; ++k) {
+    //         int idx = j * Nz + k;  // row-major: y-major
+    //         file << w.rms[idx] << endl;
+    //     }
+    // }
 
     file.close();
-    cout << "Finished plotting." << endl;
+    cout << "Finished plotting to file: " << filename << endl;
 }
 
 

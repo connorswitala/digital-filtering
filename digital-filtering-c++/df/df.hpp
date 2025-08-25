@@ -98,7 +98,7 @@ class DIGITAL_FILTER {
 
     // =====: RMS functions :=====
     //  (to be removed when finished)
-    void allocate_rms_structures(FilterField F);        // Allocates data structures for the RMS values.
+    void allocate_rms_structures(FilterField& F);        // Allocates data structures for the RMS values.
     void rms_add();                                     // Adds square of fluctuations to rms sum every timestep
     void get_rms();                                     // Function designed to be called on its own
     void plot_rms();                                    // Plots RMS data for u', v', and w'

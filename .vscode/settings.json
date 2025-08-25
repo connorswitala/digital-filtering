@@ -85,5 +85,7 @@
                 }
             }
         ]
-    }
+    },
+
+    "terminal.integrated.defaultProfile.windows": "MINGW64"
 }
