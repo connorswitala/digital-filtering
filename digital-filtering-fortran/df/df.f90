@@ -43,10 +43,11 @@ module DIGITAL_FILTERING
         real(kind=dp), allocatable :: rho_fluc(:), T_fluc(:)
         real(kind=dp), allocatable :: rhoy(:), Uy(:), My(:), Ty(:)
         real(kind=dp), allocatable :: R11(:), R21(:), R22(:), R33(:)
+        real(kind=dp), allocatable :: R11_in(:), R21_in(:), R22_in(:), R33_in(:)
 
         real(kind=dp) :: dt
 
-        real(kind=dp), allocatable :: y(:), yc(:), z(:), dy(:), dz(:)
+        real(kind=dp), allocatable :: y(:), yc(:), z(:), dy(:), dz(:), y_d(:)
 
     
     end type digital_filter_type
@@ -57,6 +58,11 @@ module DIGITAL_FILTERING
         character(len=256) :: grid_file, vel_fluc_file
     end type DFConfig
 
+    type :: geometry
+        real(kind=dp), allocatable :: x(:), y(:), z(:)
+        real(kind=dp), allocatable :: xc(:), yc(:), zc(:)
+        real(kind=dp), allocatable :: dx(:), dy(:), dz(:)
+    end type geometry
 contains
 
     !   Constructor subroutine
@@ -80,7 +86,9 @@ contains
 
         call read_grid(DF)
         call rhoy_test(DF)
-        call get_RST(DF)
+        call get_RST_in(DF)
+        call lerp_RST(DF)
+        call plot_RST_lerp(DF)
 
         ! Allocate data structures for u, v, w
         call allocate_data_structures(DF, DF%u)
@@ -282,7 +290,7 @@ contains
 
     end subroutine calculate_filter_properties
 
-    subroutine get_RST(DF)
+    subroutine get_RST_in(DF)
         implicit none
         type(digital_filter_type), intent(inout) :: DF
         integer :: i, j, count, ios
@@ -292,6 +300,7 @@ contains
         real(kind=dp) :: val, x_est, Re, Cf, tau_w, u_tau
 
         ! Allocate vectors for arrays
+        allocate(DF%y_d(DF%vel_file_N_values))
         allocate(urms_us(DF%vel_file_N_values))
         allocate(vrms_us(DF%vel_file_N_values))
         allocate(wrms_us(DF%vel_file_N_values))
@@ -304,6 +313,11 @@ contains
         allocate(DF%R21(DF%vel_file_N_values))
         allocate(DF%R22(DF%vel_file_N_values))
         allocate(DF%R33(DF%vel_file_N_values))
+        allocate(DF%R11_in(DF%vel_file_N_values))
+        allocate(DF%R21_in(DF%vel_file_N_values))
+        allocate(DF%R22_in(DF%vel_file_N_values))
+        allocate(DF%R33_in(DF%vel_file_N_values))
+
 
         open(unit = 10, file=DF%vel_fluc_file, status='old', action='read', iostat=ios)
         if (ios /= 0) then
@@ -330,6 +344,7 @@ contains
             if (ios /= 0) cycle
 
             if (count <= DF%vel_file_N_values) then
+                DF%y_d(count) = values(2)
                 urms_us(count) = values(9)
                 vrms_us(count) = values(11)
                 wrms_us(count) = values(10)
@@ -359,15 +374,94 @@ contains
 
         ! Set Reynolds stress terms
         do i = 1, DF%vel_file_N_values
-            DF%R11(i) = u_rms(i)**2
-            DF%R21(i) = uv_rms(i)
-            DF%R22(i) = v_rms(i)**2
-            DF%R33(i) = w_rms(i)**2
+            DF%R11_in(i) = u_rms(i)**2
+            DF%R21_in(i) = uv_rms(i)
+            DF%R22_in(i) = v_rms(i)**2
+            DF%R33_in(i) = w_rms(i)**2
         end do
 
         DF%d_v = 0.0002 * DF%d_i    ! Will be changed
         
-    end subroutine get_RST
+    end subroutine get_RST_in
+
+    subroutine lerp_RST(DF)
+        implicit none
+        type(digital_filter_type), intent(inout) :: DF
+        integer :: j, idx, i0, i1
+        real(kind=dp) :: yq, x0, x1, dx, t
+
+        do j = 1, DF%Ny
+            idx = (j - 1) * DF%Nz + 1
+
+            yq = DF%yc(idx) / DF%d_i
+
+            if (yq <= DF%y_d(1)) then
+                DF%R11(j) = DF%R11_in(1)
+                DF%R21(j) = DF%R21_in(1)
+                DF%R22(j) = DF%R22_in(1)
+                DF%R33(j) = DF%R33_in(1)
+                cycle
+            end if
+
+            if (yq >= DF%y_d(DF%Ny)) then
+                DF%R11(j) = DF%R11_in(DF%Ny)
+                DF%R21(j) = DF%R21_in(DF%Ny)
+                DF%R22(j) = DF%R22_in(DF%Ny)
+                DF%R33(j) = DF%R33_in(DF%Ny)
+                cycle
+            end if
+
+            i1 = lower_bound_bin(DF%y_d, yq)   
+
+
+            if (i1 <= 1) then
+                i0 = 1
+                i1 = 2
+            else if (i1 > DF%Ny) then
+                i1 = DF%Ny
+                i0 = DF%Ny-1
+            else
+                i0 = i1 - 1
+            end if
+
+            x0 = DF%y_d(i0)
+            x1 = DF%y_d(i1)
+            dx = x1 - x0
+            if (dx == 0.0_dp) then
+                t = 0.0_dp
+            else
+                t = (yq - x0) / dx
+            end if
+
+            DF%R11(j) = (1.0_dp - t) * DF%R11_in(i0) + t * DF%R11_in(i1)
+            DF%R21(j) = (1.0_dp - t) * DF%R21_in(i0) + t * DF%R21_in(i1)
+            DF%R22(j) = (1.0_dp - t) * DF%R22_in(i0) + t * DF%R22_in(i1)
+            DF%R33(j) = (1.0_dp - t) * DF%R33_in(i0) + t * DF%R33_in(i1)
+
+        end do     
+
+    end subroutine lerp_RST 
+
+    function lower_bound_bin(arr, value) result(idx)
+        implicit none
+        real(kind=dp), intent(in) :: arr(:)     ! sorted ascending
+        real(kind=dp), intent(in) :: value
+        integer :: left, right, mid, idx
+
+        left  = 1
+        right = size(arr)
+        idx   = right + 1       ! default if value > all elements
+
+        do while (left <= right)
+            mid = (left + right) / 2
+            if (arr(mid) >= value) then
+                idx   = mid
+                right = mid - 1
+            else
+                left  = mid + 1
+            end if
+        end do
+    end function lower_bound_bin
 
     subroutine generate_white_noise(DF)
         use, intrinsic :: iso_fortran_env, only: dp => real64
@@ -728,6 +822,38 @@ contains
         print *, 'CSV file written to ', filename
     end subroutine write_csv
 
+    subroutine plot_RST_lerp(DF)
+        implicit none
+        type(digital_filter_type), intent(in) :: DF
+        character(len=50) :: filename
+        integer :: j, idx
+        integer :: unit
+
+
+        filename = "../files/f_RST.csv"
+        ! Assign a free file unit
+        unit = 20
+
+        ! Open file for writing
+        open(unit=unit, file=filename, status='replace', action='write', iostat=idx)
+        if (idx /= 0) then
+            print *, 'Error opening file: ', filename
+            return
+        end if
+
+        ! Write CSV header
+        write(unit, '(A)') 'y_d, y, R11_in, R11, R22_in, R22, R33_in, R33, R21_in, R21'
+
+        ! Write data row by row
+        do j = 1, DF%Ny
+            write(unit, '(F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6,",",F12.6)') &
+                DF%y_d(j) * 0.0036, DF%y(j * (DF%Nz + 1)), DF%R11_in(j), DF%R11(j), DF%R22_in(j), DF%R22(j), DF%R33_in(j), DF%R33(j), DF%R21_in(j), DF%R21(j)
+        end do
+
+        close(unit)
+        print *, 'CSV file written to ', filename
+    end subroutine plot_RST_lerp
+
 
     ! =======: RMS Calculation Subroutines :========
 
@@ -837,11 +963,3 @@ contains
 
 
 end module DIGITAL_FILTERING
-
-
-
-
-
-
-
-

@@ -64,11 +64,12 @@ class DIGITAL_FILTER {
 
     Vector rho_fluc, T_fluc;    // Thermodynamic fluctuations
     Vector R11, R21, R22, R33;  // Reynolds stress terms
+    Vector R11_in, R21_in, R22_in, R33_in;  // Reynolds stress terms
 
     int rms_counter;            // Counter to find mean of fluctuations
     double dt;                  // Input dt for filtering
 
-    Vector y, yc, z, dy, dz;    // Geometry data
+    Vector y, yc, z, dy, dz, y_d;    // Geometry data
 
     public:
 
@@ -80,13 +81,14 @@ class DIGITAL_FILTER {
     void read_grid();                                   // Fills geometry data structures and find vector sizes
     void allocate_data_structures(FilterField& F);      // Allocates data structures for the filter.
     void calculate_filter_properties(FilterField& F);   // Calculates filter properties
-    void get_RST();                                     // Reads in fluctuation file and calculates RST
+    void get_RST_in();                                  // Reads in fluctuation file and calculates RST
     void generate_white_noise();                        // Generates white noise with mean = 0 and variance of 1
     void filtering_sweeps(FilterField& F);              // Filters the velocity fluctuations in y and z sweeps.
     void correlate_fields(FilterField& F);              // Correlates new fluctuations from old ones
     void apply_RST_scaling();                           // Scales fluctuations by RST
     void filter(double dt_input);                       // Runs all the filtering processes and updates the fluctuations.
     void get_rho_T_fluc();                              // Calculates the fluctuations for temperature and density.
+    void lerp_RST();                                    // Interpolates RST values to the CFD grid points.  
 
     // ====: Debugging functions :=====
     //  (to be removed when finished)
@@ -98,7 +100,7 @@ class DIGITAL_FILTER {
 
     // =====: RMS functions :=====
     //  (to be removed when finished)
-    void allocate_rms_structures(FilterField& F);        // Allocates data structures for the RMS values.
+    void allocate_rms_structures(FilterField& F);       // Allocates data structures for the RMS values.
     void rms_add();                                     // Adds square of fluctuations to rms sum every timestep
     void get_rms();                                     // Function designed to be called on its own
     void plot_rms();                                    // Plots RMS data for u', v', and w'
@@ -106,4 +108,5 @@ class DIGITAL_FILTER {
     // =====: Plotting functions : =====
     //  (to be removed when finished)
     void write_tecplot(const string &filename);         // Plots fluctuations
+    void plot_RST_lerp();                               // Plots Reynolds stress terms
 };

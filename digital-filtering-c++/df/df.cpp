@@ -17,7 +17,9 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
    
     read_grid();        // Eventually this will be important. Currently it just makes up my own grid for testing.
     rho_y_test();       // This will be deleted after I can read in rhoy values and not make some up.  
-    get_RST();          // Initializes the Reynold-stress tensor terms
+    get_RST_in();       // Initializes the Reynold-stress tensor terms
+    lerp_RST();         // Interpolates RST values to the CFD grid points.
+    plot_RST_lerp();
 
     // Allocate data structures for the filter fields.
     for (FilterField* F : {&u, &v, &w}) {
@@ -47,8 +49,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
     // Initialize coefficients and filter half-widths. 
     for (FilterField* F : {&u, &v, &w}) {
         calculate_filter_properties(*F);
-    }
-    
+    }    
 
     // First timestep filtering.
 
@@ -58,6 +59,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
     }
 
     apply_RST_scaling();
+
 
     // get_rho_T_fluc(); 
 }
@@ -208,8 +210,19 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
     }
 }
 
-void DIGITAL_FILTER::get_RST() {
+void DIGITAL_FILTER::get_RST_in() {
     
+    y_d = Vector(vel_file_N_values);  // z locations from the fluctuation file
+    R11_in = Vector(vel_file_N_values); 
+    R21_in = Vector(vel_file_N_values);
+    R22_in = Vector(vel_file_N_values);
+    R33_in = Vector(vel_file_N_values);
+
+    R11 = Vector(vel_file_N_values, 0.0);
+    R21 = Vector(vel_file_N_values, 0.0);
+    R22 = Vector(vel_file_N_values, 0.0);
+    R33 = Vector(vel_file_N_values, 0.0);
+
     // Open the velocity fluctuation file.
     ifstream fin(vel_fluc_file);
     if (!fin) {
@@ -245,6 +258,7 @@ void DIGITAL_FILTER::get_RST() {
 
         // columns 9, 10, 11 (1-based), so indices 8, 9, 10 (0-based)  
         if (count < vel_file_N_values) {
+            y_d[count] = values[1];      // z location
             urms_us[count] = values[8];   // urms_utau
             wrms_us[count] = values[9];   // vrms_utau
             vrms_us[count] = values[10];  // wrms_utau
@@ -264,30 +278,70 @@ void DIGITAL_FILTER::get_RST() {
     double tau_w = 33.6;                                    // Skin friction
     double u_tau = sqrt(tau_w / 0.0264);
     
-    Vector u_rms(vel_file_N_values), v_rms(vel_file_N_values), w_rms(vel_file_N_values), uv_rms(vel_file_N_values); 
+    Vector u_rms(Ny), v_rms(Ny), w_rms(Ny), uv_rms(Ny); 
 
     // Scale u'_rms / u* to inflow u*
-    for (int j = 0; j < vel_file_N_values; ++j) {
+    for (int j = 0; j < Ny; ++j) {
         u_rms[j] = urms_us[j] * u_tau;
         v_rms[j] = vrms_us[j] * u_tau;
         w_rms[j] = wrms_us[j] * u_tau;
         uv_rms[j] = uvrms_us[j] * u_tau * u_tau;
     }
 
-    R11 = Vector(vel_file_N_values, 0.0);
-    R21 = Vector(vel_file_N_values, 0.0);
-    R22 = Vector(vel_file_N_values, 0.0);
-    R33 = Vector(vel_file_N_values, 0.0);
-
     // Set Reynolds stress terms
-    for (int j = 0; j < vel_file_N_values; ++j) {
-        R11[j] = u_rms[j] * u_rms[j];
-        R21[j] = uv_rms[j];
-        R22[j] = v_rms[j] * v_rms[j];
-        R33[j] = w_rms[j] * w_rms[j];
+    for (int j = 0; j < Ny; ++j) {
+        R11_in[j] = u_rms[j] * u_rms[j];
+        R21_in[j] = uv_rms[j];
+        R22_in[j] = v_rms[j] * v_rms[j];
+        R33_in[j] = w_rms[j] * w_rms[j];
     }
 
+
     d_v = 0.0002 * d_i;     // This will need to be chaged.
+}
+
+void DIGITAL_FILTER::lerp_RST() {
+
+    for (int j = 0; j < Ny; ++j) {
+        // Pick the sample you want; here k=0 along z (cells layout Ny*Nz)
+        const std::size_t idx = static_cast<std::size_t>(j) * static_cast<std::size_t>(Nz);
+        double yq = yc[idx] / d_i;
+
+        // Below/above range: clamp (or set to zero if you prefer)
+        if (yq <= y_d.front()) {
+            R11[j] = R11_in.front();
+            R21[j] = R21_in.front();
+            R22[j] = R22_in.front();
+            R33[j] = R33_in.front();
+            continue;
+        }
+        if (yq >= y_d.back()) {
+            // choose a policy: clamp or zero. Here we clamp:
+            R11[j] = R11_in.back();
+            R21[j] = R21_in.back();
+            R22[j] = R22_in.back();
+            R33[j] = R33_in.back();
+            continue;
+        }
+
+            // Find first y_d[i1] >= yq
+            auto it  = std::lower_bound(y_d.begin(), y_d.end(), yq);
+            int i1   = static_cast<int>(it - y_d.begin());
+            int i0   = i1 - 1;
+
+            // Guard indices just in case
+            if (i0 < 0)            { i0 = 0;   i1 = 1; }
+            if (i1 >= Ny)           { i1 = Ny-1; i0 = Ny-2; }
+
+        const double x0 = y_d[i0], x1 = y_d[i1];
+        const double dx = x1 - x0;
+        const double t  = (dx != 0.0) ? (yq - x0) / dx : 0.0;
+
+        R11[j] = (1.0 - t)*R11_in[i0] + t*R11_in[i1];
+        R21[j] = (1.0 - t)*R21_in[i0] + t*R21_in[i1];
+        R22[j] = (1.0 - t)*R22_in[i0] + t*R22_in[i1];
+        R33[j] = (1.0 - t)*R33_in[i0] + t*R33_in[i1];
+    }
 }
 
 void DIGITAL_FILTER::generate_white_noise() {
@@ -598,6 +652,25 @@ void DIGITAL_FILTER::plot_rms() {
     file.close();
     cout << "Finished plotting to file: " << filename << endl;
 }
+
+void DIGITAL_FILTER::plot_RST_lerp() {
+
+    string filename = "../files/RST.csv";
+
+    ofstream file(filename);
+
+    file << "y, y_d, R11_in, R21_in, R22_in, R33_in, R11, R21, R22, R33 \n";
+
+    // Loop over y (rows) and z (columns)
+    for (int j = 0; j < Ny; ++j) {
+        file << yc[j * Nz] << ", " << y_d[j] * 0.0036 << ", " << R11_in[j] << ", " << R21_in[j] << ", " << R22_in[j]
+                << ", " << R33_in[j] << ", " << R11[j] << ", " << R21[j] << ", " << R22[j] << ", " << R33[j]  << endl;
+    }
+
+    file.close();
+    cout << "Finished plotting to file: " << filename << endl;
+}
+
 
 
 // ========: Plotting functions :=========
