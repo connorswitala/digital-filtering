@@ -8,6 +8,40 @@ module DIGITAL_FILTERING
     INTEGER,PARAMETER :: dp = selected_real_kind(15)
     real(kind=dp), PARAMETER :: pi = acos(-1.0_dp)
 
+    ! Private variables
+
+    type(FilterField) :: u, v, w
+
+    integer :: Ny, Nz, n_cells
+    integer :: N_in
+    integer :: rms_counter
+
+    real(kind=dp) :: rand1, rand2
+    real(kind=dp) :: d_i, d_v
+    real(kind=dp) :: rho_e, U_e, mu_e
+    real(kind=dp) :: U_w, rho_w, T_w, P, mu, gcon
+    character(len=*) :: line_file
+    real(kind=dp), allocatable :: Us, rhos, Ts, Ps, Ms
+    real(kind=dp) :: u_tau, tau_w
+
+    real(kind=dp), allocatable :: rho_fluc(:), T_fluc(:)
+    real(kind=dp), allocatable :: rhoy(:), Uy(:), My(:), Ty(:)
+    real(kind=dp), allocatable :: R11(:), R21(:), R22(:), R33(:)
+    real(kind=dp), allocatable :: R11_in(:), R21_in(:), R22_in(:), R33_in(:)
+
+    real(kind=dp) :: dt
+
+    real(kind=dp), allocatable :: y(:), & ! y vertices for entire inflow size (Ny * Nz)
+    yc(:),      & ! y cell-center for entire inflow
+    z(:),       & ! cell heights for entire inflow
+    dy(:),      & ! cell widths for entire inflow
+    dz(:),      & ! y cell centers normalized by d_i
+    yc_d(:),    & ! y locations normalized by delta (from Duan data)
+    yin_d(:),   & ! y locations (from Duan data)
+    ydline(:),  & ! Assuming y stretching is constant across z, this is all y locations normalized by our delta for DF
+    yline(:),   & ! Same as above but not normalized;
+
+
     type :: FilterField
 
         real(kind=dp), allocatable :: fluc(:), filt(:), filt_old(:)
@@ -21,36 +55,6 @@ module DIGITAL_FILTERING
         real(kind=dp) :: Iz_inn, Iz_out, Lt
 
     end type FilterField
-
-    ! Define a type (like a class)
-    type :: digital_filter_type
-        ! Private variables
-        character(len=:), allocatable :: grid_file
-        character(len=:), allocatable :: vel_fluc_file
-        integer :: vel_file_offset
-        integer :: vel_file_N_values
-
-        type(FilterField) :: u, v, w
-
-        integer :: Ny, Nz, n_cells
-        integer :: Ny_max, Nz_max
-        integer :: rms_counter
-
-        real(kind=dp) :: rand1, rand2
-        real(kind=dp) :: d_i, d_v
-        real(kind=dp) :: rho_e, U_e, mu_e
-
-        real(kind=dp), allocatable :: rho_fluc(:), T_fluc(:)
-        real(kind=dp), allocatable :: rhoy(:), Uy(:), My(:), Ty(:)
-        real(kind=dp), allocatable :: R11(:), R21(:), R22(:), R33(:)
-        real(kind=dp), allocatable :: R11_in(:), R21_in(:), R22_in(:), R33_in(:)
-
-        real(kind=dp) :: dt
-
-        real(kind=dp), allocatable :: y(:), yc(:), z(:), dy(:), dz(:), y_d(:)
-
-    
-    end type digital_filter_type
 
     type :: DFConfig
         real(kind=dp) :: d_i, rho_e, U_e, mu_e

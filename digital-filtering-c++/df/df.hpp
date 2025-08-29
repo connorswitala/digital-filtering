@@ -7,6 +7,7 @@
 #include <random>
 #include <string>
 #include <sstream>
+#include <iomanip>
 #include <fstream>
 #include <chrono> 
 #include "../pcg-cpp/include/pcg_random.hpp"
@@ -52,15 +53,8 @@ class DIGITAL_FILTER {
 
     private:
 
-    string grid_file;           // File containing the grid data.
-    string vel_fluc_file;       // File containing the velocity fluctuations.
-    int vel_file_offset;        // Number of lines to skip in fluctuation header file
-    int vel_file_N_values;      // Number of lines to read in fluctuation file
-
     int Ny, Nz, n_cells;        // Storage for CFD domain.
-    double d_i, d_v;            // Inlet boundary layer height and viscous length scale. 
-    double rho_e, U_e, mu_e;    // Freestream flow parameters
-    Vector rhoy, Uy, My, Ty;    // Mean distribution of flow variable in wall normal direction.
+    double N_in;                // Duan file number of values to rrea din.
 
     Vector rho_fluc, T_fluc;    // Thermodynamic fluctuations
     Vector R11, R21, R22, R33;  // Reynolds stress terms
@@ -69,8 +63,25 @@ class DIGITAL_FILTER {
     int rms_counter;            // Counter to find mean of fluctuations
     double dt;                  // Input dt for filtering
 
-    Vector y, yc, z, dy, dz, y_d;    // Geometry data
+    // Geometry vectors
+    Vector y,       // y vertices for entire inflow size (Ny * Nz)
+        yc,         // y cell-center for entire inflow
+        dy,         // cell heights for entire inflow
+        dz,         // cell widths for entire inflow
+        yc_d,       // y cell centers normalized by d_i
+        yin_d,      // y locations normalized by delta (from Duan data)
+        y_in,       // y locations (from Duan data)
+        ydline,     // Assuming y stretching is constant across z, this is all y locations normalized by our delta for DF
+        yline;      // Same as above but not normalized;
 
+    double d_i, d_v;                        // Inlet boundary layer height and viscous length scale. 
+    double rho_e, U_e, T_e;                 // Freestream flow parameters
+    double U_w, rho_w, T_w, P, mu, gcon;    // Wall values and global constants
+    string line_file;                       // line.dat filename
+    Vector Us, Ts, rhos, Ps, Ms;            // Mean wall-normal profiles
+    double u_tau, tau_w;                    // Importans wall quantities
+
+    Vector T_rms, rho_rms, T_rms_added, rho_rms_added;  // RMS data structures
     public:
 
     FilterField u, v, w; 
@@ -88,15 +99,11 @@ class DIGITAL_FILTER {
     void apply_RST_scaling();                           // Scales fluctuations by RST
     void filter(double dt_input);                       // Runs all the filtering processes and updates the fluctuations.
     void get_rho_T_fluc();                              // Calculates the fluctuations for temperature and density.
-    void lerp_RST();                                    // Interpolates RST values to the CFD grid points.  
+    void read_line_file();                              // Reads in line.dat file to get wall normal profile.
 
     // ====: Debugging functions :=====
-    //  (to be removed when finished)
-    void test();                                        // Used for testing purposes.        
+    //  (to be removed when finished)      
     void display_data(Vector& v);                       // Displays the data in the vector.
-    void find_mean_variance(Vector& v);                 // Finds the mean and variance of the vector.
-    void rho_y_test();                                  // Test wall-normal density distribution 
-
 
     // =====: RMS functions :=====
     //  (to be removed when finished)
@@ -109,4 +116,12 @@ class DIGITAL_FILTER {
     //  (to be removed when finished)
     void write_tecplot(const string &filename);         // Plots fluctuations
     void plot_RST_lerp();                               // Plots Reynolds stress terms
+    void write_csv(const std::string &filename);
+
+    Vector linear_interpolate(
+    const vector<double>& y_data,
+    const vector<double>& f_data,
+    const vector<double>& y_new);
 };
+
+

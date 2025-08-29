@@ -3,30 +3,35 @@
 // Constructor
 DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
 
-    // Set class members equal to config counterparts
-    d_i = config.d_i;
-    rho_e = config.rho_e;
-    U_e = config.U_e;
-    mu_e = config.mu_e;
-    grid_file = config.grid_file;
-    vel_fluc_file = config.vel_fluc_file;
-    vel_file_offset = config.vel_file_offset;
-    vel_file_N_values = config.vel_file_N_values;
+    // Flow case specific!!
+    d_i = 0.0013;
+    rho_e = 0.044;
+    U_e = 869.1;
+    mu = 7.1212e-6;
+    T_w = 97.5;
+    gcon = 287.0;
+    T_e = 55.2;
+    P = rho_e * 287.0 * T_e;
+    rho_w = 0.0249;
+    line_file = "../line.dat";
 
+    /**
+     * Things that I need: 
+     *  Access to line file (file name)
+     *  Ny, Nz, y, dz, dy, yc
+     */ 
+    
     rms_counter = 0;
    
     read_grid();        // Eventually this will be important. Currently it just makes up my own grid for testing.
-    rho_y_test();       // This will be deleted after I can read in rhoy values and not make some up.  
-    get_RST_in();       // Initializes the Reynold-stress tensor terms
-    lerp_RST();         // Interpolates RST values to the CFD grid points.
-    plot_RST_lerp();
+    get_RST_in();       // Initializes the Reynold-stress tensor terms and also fills in wall normal profiles for flow variables.
 
     // Allocate data structures for the filter fields.
     for (FilterField* F : {&u, &v, &w}) {
         allocate_data_structures(*F);
     }
 
-    // Integral length scales
+    // Integral length scales (Currently an issue that needs to be resolved)
     u.Iz_out = 0.4 * d_i;
     u.Iz_inn = 150 * d_v;
     u.Lt = 0.8 * d_i / U_e;
@@ -39,10 +44,6 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
     w.Iz_inn = 150 * d_v;
     w.Lt = 0.3 * d_i / U_e;
 
-    // Flow interpolation variables.
-    My = Vector(Ny);
-    Uy = Vector(Ny);
-    Ty = Vector(Ny);
     rho_fluc = Vector(n_cells);
     T_fluc = Vector(n_cells);
 
@@ -61,7 +62,7 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
     apply_RST_scaling();
 
 
-    // get_rho_T_fluc(); 
+    // // get_rho_T_fluc(); 
 }
 
 
@@ -70,23 +71,25 @@ DIGITAL_FILTER::DIGITAL_FILTER(DFConfig config) : u(), v(), w() {
 void DIGITAL_FILTER::read_grid() {
 
     Nz = 400;
-    Ny = vel_file_N_values;
+    Ny = 560; 
     n_cells = Nz * Ny;
 
+    y = Vector((Ny + 1) * (Nz + 1)); 
+    z = Vector((Ny + 1) * (Nz + 1)); 
 
-    y = Vector((Ny + 1) * (Nz + 1), 0.0); 
-    z = Vector((Ny + 1) * (Nz + 1), 0.0); 
-
-    yc = Vector(n_cells, 0.0);
-    dy = Vector(n_cells, 0.0); 
-    dz = Vector(n_cells, 0.0);
+    yc = Vector(n_cells);
+    yc_d = Vector(n_cells);
+    dy = Vector(n_cells); 
+    dz = Vector(n_cells);
+    ydline = Vector(Ny);
+    yline = Vector(Ny);
 
     /**
      *  =============================: This part will be removed :=================================
      *  Is just a holder for y and z values since I cant read into grid yet. Needs to be replaced with real grid grabber. 
      */
 
-    double y_max = 2 * d_i;
+    double y_max = 3 * d_i;
     double eta = 0.0;  
     double a = 2.0; 
 
@@ -100,13 +103,17 @@ void DIGITAL_FILTER::read_grid() {
 
     for (int j = 0; j < Ny; ++j) {
         for (int k = 0; k < Nz; ++k) {
-            dy[j * Nz + k] = y[(j + 1) * (Nz + 1) + k] - y[j * (Nz + 1) + k];
-            dz[j * Nz + k] = 0.000133;        // This is just a holder for dz
-            yc[j * Nz + k] = 0.25 * (y[j * (Nz + 1) + k] 
+            int idx = j * Nz + k;
+            dy[idx] = y[(j + 1) * (Nz + 1) + k] - y[j * (Nz + 1) + k];
+            dz[idx] = 0.000133;        // This is just a holder for dz
+            yc[idx] = 0.25 * (y[j * (Nz + 1) + k] 
             + y[(j + 1) * (Nz + 1) + k] 
             + y[j * (Nz + 1) + k + 1] 
             + y[(j + 1) * (Nz + 1) + k + 1]);
+            yc_d[idx] = yc[idx] / d_i;
         }
+        ydline[j] = yc_d[j * Nz];
+        yline[j] = yc[j * Nz];
     }
 }
 
@@ -212,40 +219,42 @@ void DIGITAL_FILTER::calculate_filter_properties(FilterField& F) {
 
 void DIGITAL_FILTER::get_RST_in() {
     
-    y_d = Vector(vel_file_N_values);  // z locations from the fluctuation file
-    R11_in = Vector(vel_file_N_values); 
-    R21_in = Vector(vel_file_N_values);
-    R22_in = Vector(vel_file_N_values);
-    R33_in = Vector(vel_file_N_values);
 
-    R11 = Vector(vel_file_N_values, 0.0);
-    R21 = Vector(vel_file_N_values, 0.0);
-    R22 = Vector(vel_file_N_values, 0.0);
-    R33 = Vector(vel_file_N_values, 0.0);
-
-    // Open the velocity fluctuation file.
-    ifstream fin(vel_fluc_file);
+    // Open RST file. 
+    ifstream fin("../files/RST.dat"); 
     if (!fin) {
         cerr << "Error opening input file\n";
         return;
     }
-
     string line;
-    // Skip the header lines.
-    for (int i = 0; i < vel_file_offset; ++i) {
-        getline(fin, line);
+
+    // Skip header line
+    getline(fin, line); 
+   
+    // Find number of values to read in
+    getline(fin, line);
+    size_t pos = line.find("i=");
+    if (pos != std::string::npos) {
+        std::istringstream iss(line.substr(pos + 2));
+        iss >> N_in;
     }
 
-    // Create data structures to input file data.
-    Vector urms_us(vel_file_N_values), 
-           vrms_us(vel_file_N_values), 
-           wrms_us(vel_file_N_values), 
-           uvrms_us(vel_file_N_values);
-           
+    // Vector allocations
+    y_in = Vector(N_in);
+    yin_d = Vector(N_in);
+    R11_in = Vector(N_in); 
+    R21_in = Vector(N_in);
+    R22_in = Vector(N_in);
+    R33_in = Vector(N_in);
+
+    Vector urms_us(N_in), 
+           vrms_us(N_in), 
+           wrms_us(N_in), 
+           uvrms_us(N_in);           
 
     int count = 0;
 
-    // Read remaining lines and gather data.
+    // Read lines and put values into data structures
     while (getline(fin, line)) {
         if (line.empty()) continue;
 
@@ -257,91 +266,67 @@ void DIGITAL_FILTER::get_RST_in() {
         }
 
         // columns 9, 10, 11 (1-based), so indices 8, 9, 10 (0-based)  
-        if (count < vel_file_N_values) {
-            y_d[count] = values[1];      // z location
-            urms_us[count] = values[8];   // urms_utau
-            wrms_us[count] = values[9];   // vrms_utau
-            vrms_us[count] = values[10];  // wrms_utau
-            uvrms_us[count] = values[15]; // upwp_utausq
+        if (count < N_in) {
+            y_in[count] = values[0];
+            yin_d[count] = values[1];      // z location
+            urms_us[count] = values[2];   // urms_utau
+            vrms_us[count] = values[3];   // vrms_utau
+            wrms_us[count] = values[4];  // wrms_utau
+            uvrms_us[count] = values[5]; // upwp_utausq
         }
         count++;       
     }
 
-    
-    double val, x_est, Re;      
-    Re = rho_e * U_e / mu_e;                                // Re_x / x based on freestream conditions.
+    // This snippet resizes Ny to make sure that it stays within y/delta from RST file. What this 
+    // means is that we only add perturbations within ~ 2.5 * d_i.
+    int new_Ny = 0;
+    int j = 0;
+    while (yc_d[j * Nz] <= yin_d[N_in - 1] && j < Ny) {
+        new_Ny++;
+        j++;
+    }
+    Ny = new_Ny;
 
-    val = d_i / 0.37 * pow(Re, 1.0/5.0);
-    x_est = pow(val, 5.0/4.0);                              // Estimated x-location from inflow delta.
 
-    double Cf = 0.0576 / pow(Re * x_est, 1.0/5.0);          // Estimate skin friction coefficient using Prandtl's one-seventh-power law.
-    double tau_w = 33.6;                                    // Skin friction
-    double u_tau = sqrt(tau_w / 0.0264);
-    
-    Vector u_rms(Ny), v_rms(Ny), w_rms(Ny), uv_rms(Ny); 
+    // Allocating RST vectors
+    R11 = Vector(Ny);
+    R21 = Vector(Ny);
+    R22 = Vector(Ny);
+    R33 = Vector(Ny);
+
+    // Resize geometry vectors
+    n_cells = Ny * Nz;
+    y.resize((Ny + 1) * (Nz + 1));
+    yc.resize(n_cells);
+    yc_d.resize(n_cells);
+    dy.resize(n_cells);
+    ydline.resize(Ny);
+    yline.resize(Ny);
+
+    // Read in line.dat
+    read_line_file();
+
+    Vector u_rms(N_in), v_rms(N_in), w_rms(N_in), uv_rms(N_in); 
 
     // Scale u'_rms / u* to inflow u*
-    for (int j = 0; j < Ny; ++j) {
-        u_rms[j] = urms_us[j] * u_tau;
-        v_rms[j] = vrms_us[j] * u_tau;
-        w_rms[j] = wrms_us[j] * u_tau;
-        uv_rms[j] = uvrms_us[j] * u_tau * u_tau;
+    for (int j = 0; j < N_in; ++j) {
+        R11_in[j] = urms_us[j] * urms_us[j] * u_tau * u_tau;
+        R22_in[j] = vrms_us[j] * vrms_us[j] * u_tau * u_tau;
+        R33_in[j] = wrms_us[j] * wrms_us[j] * u_tau * u_tau;
+        R21_in[j] = uvrms_us[j] * u_tau * u_tau;
     }
 
-    // Set Reynolds stress terms
-    for (int j = 0; j < Ny; ++j) {
-        R11_in[j] = u_rms[j] * u_rms[j];
-        R21_in[j] = uv_rms[j];
-        R22_in[j] = v_rms[j] * v_rms[j];
-        R33_in[j] = w_rms[j] * w_rms[j];
-    }
+    // Interpolate values to our grid values
+    R11 = linear_interpolate(yin_d, R11_in, ydline);
+    R22 = linear_interpolate(yin_d, R22_in, ydline);
+    R21 = linear_interpolate(yin_d, R21_in, ydline);
+    R33 = linear_interpolate(yin_d, R33_in, ydline);
 
-
-    d_v = 0.0002 * d_i;     // This will need to be chaged.
-}
-
-void DIGITAL_FILTER::lerp_RST() {
-
-    for (int j = 0; j < Ny; ++j) {
-        // Pick the sample you want; here k=0 along z (cells layout Ny*Nz)
-        const std::size_t idx = static_cast<std::size_t>(j) * static_cast<std::size_t>(Nz);
-        double yq = yc[idx] / d_i;
-
-        // Below/above range: clamp (or set to zero if you prefer)
-        if (yq <= y_d.front()) {
-            R11[j] = R11_in.front();
-            R21[j] = R21_in.front();
-            R22[j] = R22_in.front();
-            R33[j] = R33_in.front();
-            continue;
-        }
-        if (yq >= y_d.back()) {
-            // choose a policy: clamp or zero. Here we clamp:
-            R11[j] = R11_in.back();
-            R21[j] = R21_in.back();
-            R22[j] = R22_in.back();
-            R33[j] = R33_in.back();
-            continue;
-        }
-
-            // Find first y_d[i1] >= yq
-            auto it  = std::lower_bound(y_d.begin(), y_d.end(), yq);
-            int i1   = static_cast<int>(it - y_d.begin());
-            int i0   = i1 - 1;
-
-            // Guard indices just in case
-            if (i0 < 0)            { i0 = 0;   i1 = 1; }
-            if (i1 >= Ny)           { i1 = Ny-1; i0 = Ny-2; }
-
-        const double x0 = y_d[i0], x1 = y_d[i1];
-        const double dx = x1 - x0;
-        const double t  = (dx != 0.0) ? (yq - x0) / dx : 0.0;
-
-        R11[j] = (1.0 - t)*R11_in[i0] + t*R11_in[i1];
-        R21[j] = (1.0 - t)*R21_in[i0] + t*R21_in[i1];
-        R22[j] = (1.0 - t)*R22_in[i0] + t*R22_in[i1];
-        R33[j] = (1.0 - t)*R33_in[i0] + t*R33_in[i1];
-    }
+    // d_v = mu / (rhos[0] * u_tau); 
+    d_v = d_i / 4500; 
+    cout << "rho_w = " <<  rhos[0] << endl;
+    cout << "d_v = " << d_v << endl;
+    cout << "d_i / d_v = " << d_i/d_v << endl;
 }
 
 void DIGITAL_FILTER::generate_white_noise() {
@@ -473,80 +458,107 @@ void DIGITAL_FILTER::filter(double dt_input) {
     }
 
     apply_RST_scaling(); 
+    get_rho_T_fluc();
     auto end = NOW;
     auto elapsed = chrono::duration<double>(end - start);
     cout << "Filtering took " << elapsed.count() << " seconds." << endl;
     
-    string filename = "../files/cpp_vel_fluc.dat";
-    write_tecplot(filename);
+    string filename = "../files/cpp_vel_fluc.csv";
+    write_csv(filename);
 }
 
-void DIGITAL_FILTER::get_rho_T_fluc() {
+void DIGITAL_FILTER::get_rho_T_fluc() { 
+
     for (int j = 0; j < Ny; ++j) {
 
-        double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j];
+        double temp1 = - 0.5 * (1.4 - 1) * Ms[j] * Ms[j] / Us[j];
 
         for (int k = 0; k < Nz; ++k) {            
 
-            double val = -(1.4 - 1.0) * My[j] * My[j] * Uy[j] * u.fluc[j * Nz + k];
+            double temp2 = temp1 * u.fluc[j * Nz + k];
 
-            T_fluc[j * Nz + k] = val * u.fluc[j * Nz + k];
-            rho_fluc[j * Nz + k] = -val * u.fluc[j * Nz + k] / Ty[j] * rhoy[j]; 
+            T_fluc[j * Nz + k] = temp2 * Ts[j];
+            rho_fluc[j * Nz + k] = -temp2 * rhos[j]; 
 
         }
     }
 }
 
+void DIGITAL_FILTER::read_line_file() {
+    
 
+    // Open RST file. 
+    ifstream fin(line_file); 
+    if (!fin) {
+        cerr << "Error opening input file\n";
+        return;
+    }
+    string line;
+
+    getline(fin, line); // Skip header line
+    int N_line;
+    // Find number of values
+    getline(fin, line);
+    size_t pos = line.find("i=");
+    if (pos != string::npos) {
+        istringstream iss(line.substr(pos + 2));
+        iss >> N_line;
+    }
+
+    Vector u_file(N_line), p_file(N_line), rho_file(N_line), T_file(N_line), y_file(N_line);
+    Us = Vector(Ny);
+    Ts = Vector(Ny);
+    Ps = Vector(Ny);
+    rhos = Vector(Ny);    
+    Ms = Vector(Ny); 
+
+    int count = 0;
+
+    // Read remaining lines and gather data.
+    while (getline(fin, line)) {
+        if (line.empty()) continue;
+
+        istringstream iss(line);
+        Vector values;
+        double val;
+        while (iss >> val) {
+            values.push_back(val);
+        }
+
+        // columns 9, 10, 11 (1-based), so indices 8, 9, 10 (0-based)  
+        if (count < N_line) {
+            y_file[count] = values[1];
+            rho_file[count] = values[4];   // urms_utau
+            u_file[count] = values[5];   // vrms_utau
+            T_file[count] = values[8];  // wrms_utau
+            p_file[count] = values[9];  // wrms_utau
+        }
+        count++;       
+    }
+
+    Us = linear_interpolate(y_file, u_file, yline);
+    Ps = linear_interpolate(y_file, p_file, yline);
+    Ts = linear_interpolate(y_file, T_file, yline);
+    rhos = linear_interpolate(y_file, rho_file, yline);
+    for (int j = 0; j < Ny; ++j) {
+        Ms[j] = Us[j] / sqrt(1.4 * gcon * Ts[j]);
+    }
+
+    double dy = y_file[1] - y_file[0];
+    double du = Us[1] - Us[0];
+    tau_w = mu * du/dy;
+    u_tau = sqrt(tau_w / rhos[0]);
+    cout << "tau_w = " << tau_w << endl;
+    cout << "u_tau = " << u_tau << endl;
+}
 
 // ========: Debugging functions : ========
-
-void DIGITAL_FILTER::test() {
-
-
-    // generate_white_noise();
-    // filtering_sweeps();
-    // correlate_fields_ts1();
-
-    // // Write fluctuations to a file.
-    // string filename = "velocity_fluc_contour_plot.dat";
-    // write_tecplot(filename);
-
-    // filename = "velocity_fluc_line_plot.dat";
-    // write_tecplot_line(filename);
-}
 
 void DIGITAL_FILTER::display_data(Vector& v) {
     for (auto val : v) {
         std::cout << val << std::endl;
     }
 }
-
-void DIGITAL_FILTER::find_mean_variance(Vector& v) {
-    double mean_sum = 0.0, var_sum = 0.0;
-
-    for (int i = 0; i < n_cells; ++i) {
-        mean_sum += v[i];
-    }
-
-    double mean = mean_sum / n_cells;
-
-    for (int i = 0; i < n_cells; ++i) {
-        var_sum += (v[i] - mean) * (v[i] - mean);
-    }
-
-    double variance = var_sum / n_cells;
-
-    cout << "Mean: " << mean << "\t Variance: " << variance << endl;
-}
-
-void DIGITAL_FILTER::rho_y_test() {
-    rhoy = Vector(Ny, 0.0);
-    for (int j = 0; j < Ny; ++j) {
-        rhoy[j] = rho_e * (0.7 * yc[j * Nz] / d_i + 0.6);
-    }
-}
-
 
 
 // ========: RMS functions :=========
@@ -564,6 +576,8 @@ void DIGITAL_FILTER::rms_add()  {
         u.rms_added[idx] +=  u.fluc[idx] * u.fluc[idx];
         v.rms_added[idx] +=  v.fluc[idx] * v.fluc[idx];
         w.rms_added[idx] +=  w.fluc[idx] * w.fluc[idx];
+        T_rms_added[idx] += T_fluc[idx] * T_fluc[idx];
+        rho_rms_added[idx] += rho_fluc[idx] * rho_fluc[idx];
     }    
 }
 
@@ -572,10 +586,14 @@ void DIGITAL_FILTER::get_rms()  {
     allocate_rms_structures(u);
     allocate_rms_structures(v);
     allocate_rms_structures(w);
+    T_rms = Vector(n_cells, 0.0);
+    rho_rms = Vector(n_cells, 0.0); 
+    T_rms_added = Vector(n_cells, 0.0);
+    rho_rms_added = Vector(n_cells, 0.0); 
 
     dt = 1e-5;
 
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 500; ++i) {
         generate_white_noise();    
         filtering_sweeps(u);
         filtering_sweeps(v);
@@ -584,6 +602,7 @@ void DIGITAL_FILTER::get_rms()  {
         correlate_fields(v); 
         correlate_fields(w); 
         apply_RST_scaling();
+        get_rho_T_fluc();
         rms_add();
     }
 
@@ -597,6 +616,8 @@ void DIGITAL_FILTER::plot_rms() {
         u.rms[i] = sqrt(u.rms_added[i] / rms_counter);
         v.rms[i] = sqrt(v.rms_added[i] / rms_counter);
         w.rms[i] = sqrt(w.rms_added[i] / rms_counter);
+        T_rms[i] = sqrt(T_rms_added[i] / rms_counter);
+        rho_rms[i] = sqrt(rho_rms_added[i] / rms_counter);
     }
 
     string filename = "../files/cpp_vel_fluc_rms.csv";
@@ -606,14 +627,14 @@ void DIGITAL_FILTER::plot_rms() {
     // file << "ZONE T=\"Flow Field\", I=" << Nz + 1 << ", J=" << Ny + 1 << ", F=BLOCK\n";
     // file << "VARLOCATION=([3-5]=CELLCENTERED)\n";
 
-    file << "z, y, u'_rms, v'_rms, w'_rms\n";
+    file << "z, y, u'_rms, v'_rms, w'_rms, T'_rms, rho'_rms \n";
 
     // Loop over y (rows) and z (columns)
     for (int j = 0; j < Ny; ++j) {
             for (int k = 0; k < Nz; ++k) {
             int idx = j * (Nz) + k;  // row-major: y-major
             int iidx = j * (Nz + 1) + k; // for y and z which are one size larger
-            file << z[iidx] << ", " << y[iidx] << ", " << u.rms[idx] << ", " << v.rms[idx] << ", " << w.rms[idx] << endl;
+            file << z[iidx] << ", " << y[iidx] << ", " << u.rms[idx] << ", " << v.rms[idx] << ", " << w.rms[idx] << ", " << T_rms[idx] << ", " << rho_rms[idx] << endl;
         }
     }
 
@@ -655,20 +676,33 @@ void DIGITAL_FILTER::plot_rms() {
 
 void DIGITAL_FILTER::plot_RST_lerp() {
 
-    string filename = "../files/RST.csv";
+    ofstream file("../files/myRST.csv");
 
-    ofstream file(filename);
-
-    file << "y, y_d, R11_in, R21_in, R22_in, R33_in, R11, R21, R22, R33 \n";
+    file << "y, R11, R21, R22, R33 \n";
 
     // Loop over y (rows) and z (columns)
     for (int j = 0; j < Ny; ++j) {
-        file << yc[j * Nz] << ", " << y_d[j] * 0.0036 << ", " << R11_in[j] << ", " << R21_in[j] << ", " << R22_in[j]
-                << ", " << R33_in[j] << ", " << R11[j] << ", " << R21[j] << ", " << R22[j] << ", " << R33[j]  << endl;
+        file << yc[j * Nz] << ", " << ", " << R11[j] << ", " << R21[j] << ", " << R22[j] << ", " << R33[j]  << endl;
     }
 
     file.close();
-    cout << "Finished plotting to file: " << filename << endl;
+
+
+    ofstream file1("../files/duanRST.csv");
+        
+
+    file1 << "y_d, R11_in, R21_in, R22_in, R33_in \n";
+
+    // Loop over y (rows) and z (columns)
+    for (int j = 0; j < N_in; ++j) {
+        file1 << y_in[j] << ", " << R11_in[j] << ", " << R21_in[j] << ", " << R22_in[j]
+                << ", " << R33_in[j] << endl;
+    }
+
+    file1.close();
+
+
+    cout << "Finished plotting RST to file. " << endl; 
 }
 
 
@@ -725,4 +759,90 @@ void DIGITAL_FILTER::write_tecplot(const string &filename) {
 
     file.close();
     cout << "Finished plotting." << endl;
+}
+
+void DIGITAL_FILTER::write_csv(const std::string &filename) {
+    std::ofstream file(filename, std::ios::trunc);
+    if (!file) {
+        std::cerr << "Error: cannot open " << filename << " for writing.\n";
+        return;
+    }
+
+    // Header
+    file << "z,y,u_fluc,v_fluc,w_fluc,T_fluc,rho_fluc\n";
+    file << std::setprecision(15) << std::fixed;
+
+    // Loop over cells (Ny x Nz)
+    for (int j = 0; j < Ny; ++j) {
+        for (int k = 0; k < Nz; ++k) {
+            // Node indices for the four corners of cell (j,k)
+            int n00 =  j      * (Nz + 1) +  k;
+            int n01 =  j      * (Nz + 1) + (k + 1);
+            int n10 = (j + 1) * (Nz + 1) +  k;
+            int n11 = (j + 1) * (Nz + 1) + (k + 1);
+
+            // Cell-center coordinates (average of 4 nodes)
+            double yc = 0.25 * (y[n00] + y[n01] + y[n10] + y[n11]);
+            double zc = 0.25 * (z[n00] + z[n01] + z[n10] + z[n11]);
+
+            // Cell-centered data index
+            int cidx = j * Nz + k;
+
+            // CSV row
+            file << zc << "," << yc << ","
+                 << u.fluc[cidx] << ","
+                 << v.fluc[cidx] << ","
+                 << w.fluc[cidx] << "," 
+                 << T_fluc[cidx] << ","
+                 << rho_fluc[cidx] << "\n";
+        }
+    }
+
+    file.close();
+    std::cout << "CSV written to " << filename << "\n";
+}
+
+Vector DIGITAL_FILTER::linear_interpolate(
+    const vector<double>& y_data,
+    const vector<double>& f_data,
+    const vector<double>& y_new)
+{
+    if (y_data.size() != f_data.size()) {
+        throw invalid_argument("y_data and f_data must be the same size.");
+    }
+    if (y_data.size() < 2) {
+        throw invalid_argument("Need at least two data points to interpolate.");
+    }
+
+    vector<double> f_new(y_new.size());
+
+    for (size_t j = 0; j < y_new.size(); ++j) {
+        double y = y_new[j];
+
+        // Handle out-of-bounds with clamping (or could extrapolate if desired)
+        if (y <= y_data.front()) {
+            f_new[j] = f_data.front();
+            continue;
+        }
+        if (y >= y_data.back()) {
+            f_new[j] = f_data.back();
+            continue;
+        }
+
+        // Find interval [y_data[i], y_data[i+1]]
+        size_t i = 0;
+        while (i + 1 < y_data.size() && y > y_data[i+1]) {
+            ++i;
+        }
+
+        double x0 = y_data[i];
+        double x1 = y_data[i+1];
+        double f0 = f_data[i];
+        double f1 = f_data[i+1];
+
+        // Linear interpolation formula
+        f_new[j] = f0 + (f1 - f0) * ( (y - x0) / (x1 - x0) );
+    }
+
+    return f_new;
 }
